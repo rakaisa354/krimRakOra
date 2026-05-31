@@ -1,6 +1,7 @@
 from parsers.icici import parse as parse_icici
 from parsers.sbi import parse as parse_sbi
 from parsers.scapia import parse as parse_scapia
+from parsers.rbl import parse as parse_rbl
 
 def detect_card_type(md_content: str) -> str:
     if "Amazon Pay" in md_content or "ICICI Bank" in md_content:
@@ -9,9 +10,11 @@ def detect_card_type(md_content: str) -> str:
         return "sbi"
     if "Scapia" in md_content or "Federal" in md_content:
         return "scapia"
+    if "RBL Bank" in md_content:
+        return "rbl"
     raise ValueError("Unknown card type. Check the MD file header.")
 
 def parse_statement(md_content: str) -> list[dict]:
     card_type = detect_card_type(md_content)
-    parsers = {"icici": parse_icici, "sbi": parse_sbi, "scapia": parse_scapia}
+    parsers = {"icici": parse_icici, "sbi": parse_sbi, "scapia": parse_scapia, "rbl": parse_rbl}
     return parsers[card_type](md_content)
