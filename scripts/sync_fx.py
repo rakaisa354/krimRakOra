@@ -37,7 +37,10 @@ def sync():
         # API gives rates FROM INR — we want rate TO INR
         # e.g. 1 INR = 0.012 USD → 1 USD = 1/0.012 INR
         rate_from_inr = rates[currency]
-        rate_to_inr = round(1 / rate_from_inr, 6) if rate_from_inr else 0
+        if not rate_from_inr:
+            print(f"  ⚠ {currency} rate is zero — skipping")
+            continue
+        rate_to_inr = round(1 / rate_from_inr, 6)
         rows.append([today, currency, rate_to_inr])
         print(f"  ✓ {currency}: 1 {currency} = {rate_to_inr} INR")
 
