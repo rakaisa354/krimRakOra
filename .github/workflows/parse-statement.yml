@@ -1,0 +1,88 @@
+name: Parse CC Statement
+
+on:
+  # Triggered by n8n via GitHub API (repository_dispatch)
+  repository_dispatch:
+    types: [parse-statement]
+
+  # Manual trigger from GitHub UI (for testing)
+  workflow_dispatch:
+    inputs:
+      filename:
+        description: "Statement filename in statements/ folder (e.g. ICICI_Bank.md)"
+        required: true
+        type: string
+
+  # Auto-trigger when a statement MD is pushed to the repo
+  push:
+    paths:
+      - "statements/*.md"
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write credentials.json
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
+
+      - name: Write .env
+        run: |
+          echo "GOOGLE_SHEETS_ID=${{ secrets.GOOGLE_SHEETS_ID }}" >> .env
+          echo "CLAUDE_API_KEY=${{ secrets.CLAUDE_API_KEY }}" >> .env
+          echo "FX_API_KEY=${{ secrets.FX_API_KEY }}" >> .env
+          echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> .env
+          echo "BASE_CURRENCY=INR" >> .env
+          echo "SALARY_DAY=1" >> .env
+
+      # --- Path 1: triggered by repository_dispatch from n8n ---
+      - name: Parse statement (n8n trigger)
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          FILE="${{ github.event.client_payload.filename }}"
+          echo "Parsing: $FILE"
+          python3 finance.py parse --file "statements/$FILE"
+
+      # --- Path 2: manual workflow_dispatch ---
+      - name: Parse statement (manual trigger)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          FILE="${{ github.event.inputs.filename }}"
+          echo "Parsing: $FILE"
+          python3 finance.py parse --file "statements/$FILE"
+
+      # --- Path 3: push trigger — parse all new/changed MDs ---
+      - name: Parse all changed statements (push trigger)
+        if: github.event_name == 'push'
+        run: |
+          git diff --name-only HEAD~1 HEAD -- 'statements/*.md' | while read file; do
+            echo "Parsing: $file"
+            python3 finance.py parse --file "$file"
+          done
+
+      - name: Notify Telegram on success
+        if: success()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d text="✅ Statement parsed and written to Sheets."
+
+      - name: Notify Telegram on failure
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d text="❌ Statement parse failed. Check GitHub Actions: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

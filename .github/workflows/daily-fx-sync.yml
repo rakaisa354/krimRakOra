@@ -1,0 +1,45 @@
+name: Daily FX Rate Sync
+
+on:
+  schedule:
+    - cron: "30 0 * * *"  # 6:00am IST (00:30 UTC)
+  workflow_dispatch:       # manual trigger for testing
+
+jobs:
+  fx-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write credentials.json
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
+
+      - name: Write .env
+        run: |
+          echo "GOOGLE_SHEETS_ID=${{ secrets.GOOGLE_SHEETS_ID }}" >> .env
+          echo "CLAUDE_API_KEY=${{ secrets.CLAUDE_API_KEY }}" >> .env
+          echo "FX_API_KEY=${{ secrets.FX_API_KEY }}" >> .env
+          echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> .env
+          echo "BASE_CURRENCY=INR" >> .env
+
+      - name: Sync FX rates
+        run: python3 scripts/sync_fx.py
+
+      - name: Notify Telegram on failure
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d text="⚠️ FX rate sync failed. Check Actions: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
