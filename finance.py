@@ -20,11 +20,11 @@ def parse(file, dry_run):
 
     # dedup: check existing transactions
     existing = read_all("Transactions")
-    existing_keys = {(r["date"], r["merchant"], str(r["amount_inr"])) for r in existing}
+    existing_keys = {(r["date"], r["merchant"], float(r["amount_inr"])) for r in existing}
 
     new_rows = [
         r for r in rows
-        if (r["date"], r["merchant"], str(r["amount_inr"])) not in existing_keys
+        if (r["date"], r["merchant"], float(r["amount_inr"])) not in existing_keys
     ]
 
     skipped = len(rows) - len(new_rows)
