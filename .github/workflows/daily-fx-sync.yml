@@ -35,7 +35,7 @@ jobs:
           echo "BASE_CURRENCY=INR" >> .env
 
       - name: Sync FX rates
-        run: python3 scripts/sync_fx.py
+        run: PYTHONPATH=. python3 scripts/sync_fx.py
 
       - name: Notify Telegram on failure
         if: failure()
