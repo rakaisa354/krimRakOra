@@ -1,0 +1,50 @@
+name: Query Budget Summary
+
+on:
+  repository_dispatch:
+    types: [query-budget]
+
+  workflow_dispatch:
+    inputs:
+      month:
+        description: "Month (YYYY-MM, default current month)"
+        default: ""
+
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      - name: Write credentials.json
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
+
+      - name: Write .env
+        run: |
+          echo "GOOGLE_SHEETS_ID=${{ secrets.GOOGLE_SHEETS_ID }}" >> .env
+          echo "CLAUDE_API_KEY=${{ secrets.CLAUDE_API_KEY }}" >> .env
+          echo "FX_API_KEY=${{ secrets.FX_API_KEY }}" >> .env
+          echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> .env
+          echo "BASE_CURRENCY=INR" >> .env
+
+      - name: Run query and send to Telegram
+        run: |
+          MONTH="${{ github.event.client_payload.month || github.event.inputs.month }}"
+          if [ -z "$MONTH" ]; then
+            MONTH=$(date +%Y-%m)
+          fi
+          CHAT_ID="${{ github.event.client_payload.chat_id || secrets.TELEGRAM_CHAT_ID }}"
+          SUMMARY=$(PYTHONPATH=. python3 scripts/query_budget.py --month "$MONTH")
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="$CHAT_ID" \
+            --data-urlencode "text=$SUMMARY" \
+            -d parse_mode="Markdown"

@@ -1,0 +1,87 @@
+name: Quick Add Expense
+
+on:
+  repository_dispatch:
+    types: [quick-add]
+
+  workflow_dispatch:
+    inputs:
+      merchant:
+        description: "Merchant name"
+        required: true
+      amount:
+        description: "Amount"
+        required: true
+      currency:
+        description: "Currency (default INR)"
+        default: "INR"
+      payment_method:
+        description: "upi / cash / credit_card"
+        default: "upi"
+      notes:
+        description: "Optional notes"
+        default: ""
+      date:
+        description: "Date (YYYY-MM-DD, default today)"
+        default: ""
+
+jobs:
+  add:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      - name: Write credentials.json
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
+
+      - name: Write .env
+        run: |
+          echo "GOOGLE_SHEETS_ID=${{ secrets.GOOGLE_SHEETS_ID }}" >> .env
+          echo "CLAUDE_API_KEY=${{ secrets.CLAUDE_API_KEY }}" >> .env
+          echo "FX_API_KEY=${{ secrets.FX_API_KEY }}" >> .env
+          echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> .env
+          echo "BASE_CURRENCY=INR" >> .env
+
+      - name: Add expense (repository_dispatch)
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          MERCHANT="${{ github.event.client_payload.merchant }}"
+          AMOUNT="${{ github.event.client_payload.amount }}"
+          CURRENCY="${{ github.event.client_payload.currency || 'INR' }}"
+          METHOD="${{ github.event.client_payload.payment_method || 'upi' }}"
+          NOTES="${{ github.event.client_payload.notes || '' }}"
+          DATE="${{ github.event.client_payload.date || '' }}"
+          ARGS="--merchant \"$MERCHANT\" --amount $AMOUNT --currency $CURRENCY --payment_method $METHOD"
+          [ -n "$NOTES" ] && ARGS="$ARGS --notes \"$NOTES\""
+          [ -n "$DATE" ] && ARGS="$ARGS --date $DATE"
+          eval PYTHONPATH=. python3 scripts/quick_add.py $ARGS
+
+      - name: Add expense (manual trigger)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          MERCHANT="${{ github.event.inputs.merchant }}"
+          AMOUNT="${{ github.event.inputs.amount }}"
+          CURRENCY="${{ github.event.inputs.currency }}"
+          METHOD="${{ github.event.inputs.payment_method }}"
+          NOTES="${{ github.event.inputs.notes }}"
+          DATE="${{ github.event.inputs.date }}"
+          ARGS="--merchant \"$MERCHANT\" --amount $AMOUNT --currency $CURRENCY --payment_method $METHOD"
+          [ -n "$NOTES" ] && ARGS="$ARGS --notes \"$NOTES\""
+          [ -n "$DATE" ] && ARGS="$ARGS --date $DATE"
+          eval PYTHONPATH=. python3 scripts/quick_add.py $ARGS
+
+      - name: Notify Telegram on failure
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d text="❌ Quick-add failed. Check Actions: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
