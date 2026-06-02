@@ -20,7 +20,11 @@ def parse(file, dry_run):
 
     # dedup: check existing transactions
     existing = read_all("Transactions")
-    existing_keys = {(r["date"], r["merchant"], float(r["amount_inr"])) for r in existing}
+    existing_keys = {
+        (r["date"], r["merchant"], float(r["amount_inr"]))
+        for r in existing
+        if r.get("amount_inr") not in ("", None)
+    }
 
     new_rows = [
         r for r in rows
