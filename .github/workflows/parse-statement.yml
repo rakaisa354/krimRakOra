@@ -68,16 +68,16 @@ jobs:
       - name: Parse all changed statements (push trigger)
         if: github.event_name == 'push'
         run: |
-          BASE=$(git rev-parse HEAD^1 2>/dev/null || echo "")
-          if [ -z "$BASE" ]; then
-            FILES=$(git diff --name-only HEAD -- 'statements/*.md')
-          else
-            FILES=$(git diff --name-only "$BASE" HEAD -- 'statements/*.md')
+          # git show reads files changed IN the HEAD commit — works with --depth=1 shallow clone
+          FILES=$(git show --name-only --pretty=format: HEAD | grep '^statements/.*\.md$' || true)
+          if [ -z "$FILES" ]; then
+            echo "No statement MD files changed in this push — skipping."
+            exit 0
           fi
           echo "$FILES" | while read file; do
             [ -z "$file" ] && continue
             echo "Parsing: $file"
-            python3 finance.py parse --file "$file"
+            PYTHONPATH=. python3 finance.py parse --file "$file"
           done
 
       - name: Notify Telegram on success
