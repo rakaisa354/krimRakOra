@@ -7,3 +7,12 @@ __pycache__/
 *.pyc
 dump/
 venv/
+.gstack/
+
+# Raw statement files — never commit these, only statements/ folder via n8n
+*_Bank.md
+*_Card.md
+Scapia.md
+*.env.txt
+.Rhistory
+WF*.json
