@@ -80,6 +80,22 @@ jobs:
             PYTHONPATH=. python3 finance.py parse --file "$file"
           done
 
+      # --- Archive: notify n8n to move the source file to Archive folder ---
+      # Only fires on repository_dispatch (n8n-triggered runs have a file_id to move)
+      - name: Archive source file in Google Drive
+        if: success() && github.event_name == 'repository_dispatch'
+        run: |
+          FILE_ID="${{ github.event.client_payload.file_id }}"
+          FILENAME="${{ github.event.client_payload.filename }}"
+          if [ -n "$FILE_ID" ]; then
+            curl -s -X POST "${{ secrets.N8N_ARCHIVE_WEBHOOK_URL }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"file_id\": \"$FILE_ID\", \"filename\": \"$FILENAME\"}"
+            echo "Archive request sent for $FILENAME ($FILE_ID)"
+          else
+            echo "No file_id in payload — skipping archive (manual or push trigger)"
+          fi
+
       - name: Notify Telegram on success
         if: success()
         run: |
