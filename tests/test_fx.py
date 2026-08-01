@@ -2,10 +2,15 @@ import pytest
 from unittest.mock import patch, MagicMock
 import sys
 
-# Mock sheets.read_all before importing fx
+# Mock sheets.read_all before importing fx, then restore sys.modules so
+# later test files (e.g. test_sheets.py) get the real sheets module again.
+_real_sheets = sys.modules.get('sheets')
 sys.modules['sheets'] = MagicMock()
-
 from fx import convert_to_inr, get_rate
+if _real_sheets is not None:
+    sys.modules['sheets'] = _real_sheets
+else:
+    del sys.modules['sheets']
 
 def test_inr_returns_same_amount():
     assert convert_to_inr(1000.0, "INR", "2026-05-31") == 1000.0

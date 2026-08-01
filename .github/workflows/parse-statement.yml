@@ -49,12 +49,24 @@ jobs:
           echo "SALARY_DAY=1" >> .env
 
       # --- Path 1: triggered by repository_dispatch from n8n ---
+      # n8n only sends the Drive file ID + filename (small JSON) — the
+      # actual encrypted statement PDF is pulled from Drive here, using the
+      # same service account credentials.json as Sheets (already scoped to
+      # drive.readonly). The PDF only exists on this ephemeral runner's
+      # disk for the life of the job; it is never committed to the repo.
+      - name: Download statement from Drive (n8n trigger)
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          python3 scripts/download_drive_file.py \
+            --file-id "${{ github.event.client_payload.file_id }}" \
+            --out "incoming/${{ github.event.client_payload.filename }}"
+
       - name: Parse statement (n8n trigger)
         if: github.event_name == 'repository_dispatch'
         run: |
           FILE="${{ github.event.client_payload.filename }}"
           echo "Parsing: $FILE"
-          python3 finance.py parse --file "statements/$FILE"
+          python3 finance.py parse --pdf "incoming/$FILE"
 
       # --- Path 2: manual workflow_dispatch ---
       - name: Parse statement (manual trigger)
@@ -109,3 +121,7 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
             -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
             -d text="❌ Statement parse failed. Check GitHub Actions: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Clean up downloaded statement and credentials
+        if: always()
+        run: rm -rf incoming credentials.json .env

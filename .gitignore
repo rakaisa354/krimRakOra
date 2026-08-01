@@ -1,5 +1,7 @@
 .env
 credentials.json
+token_gmail.json
+gmail_oauth_creds.json
 *.pdf
 __pycache__/
 .DS_Store
@@ -16,3 +18,5 @@ Scapia.md
 *.env.txt
 .Rhistory
 WF*.json
+.omc/
+.claude/settings.local.json

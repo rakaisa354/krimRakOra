@@ -9,3 +9,4 @@ FX_API_KEY         = os.getenv("FX_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BASE_CURRENCY      = os.getenv("BASE_CURRENCY", "INR")
 SALARY_DAY         = int(os.getenv("SALARY_DAY", "1"))
+CARD_PASSWORDS     = [p.strip() for p in os.getenv("CARD_PASSWORDS", "").split(",") if p.strip()]
