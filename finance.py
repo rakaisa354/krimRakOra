@@ -31,13 +31,14 @@ def decrypt(file, out):
     """Decrypt a password-protected statement PDF using CARD_PASSWORDS from .env."""
     if not CARD_PASSWORDS:
         click.echo("✗ CARD_PASSWORDS not set in .env")
-        return
+        raise SystemExit(1)
     out = out or file.rsplit(".", 1)[0] + "_decrypted.pdf"
     try:
         decrypt_pdf(file, out, CARD_PASSWORDS)
         click.echo(f"✓ Decrypted → {out}")
     except DecryptionError as e:
         click.echo(f"✗ {e}")
+        raise SystemExit(1)
 
 @cli.command()
 @click.option("--file", default=None, help="Path to CC statement .md file")
@@ -47,27 +48,27 @@ def parse(file, pdf, dry_run):
     """Parse a CC statement (.md file or encrypted PDF) and append to Transactions sheet."""
     if not file and not pdf:
         click.echo("✗ Provide --file or --pdf")
-        return
+        raise SystemExit(1)
     if file and pdf:
         click.echo("✗ Provide only one of --file or --pdf")
-        return
+        raise SystemExit(1)
 
     if pdf:
         if not CARD_PASSWORDS:
             click.echo("✗ CARD_PASSWORDS not set in .env")
-            return
+            raise SystemExit(1)
         decrypted = pdf.rsplit(".", 1)[0] + "_decrypted.pdf"
         try:
             decrypt_pdf(pdf, decrypted, CARD_PASSWORDS)
         except DecryptionError as e:
             click.echo(f"✗ {e}")
-            return
+            raise SystemExit(1)
         raw_text = extract_text(decrypted)
         try:
             card_type = detect_card_type(raw_text)
         except ValueError as e:
             click.echo(f"✗ {e}")
-            return
+            raise SystemExit(1)
         content = PDF_TO_MD[card_type](raw_text)
         # card_type is already known from the raw PDF text; the markdown
         # pdf_to_md.py produces is a bare pipe table with no bank-name
