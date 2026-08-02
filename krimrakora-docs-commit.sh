@@ -1,6 +1,10 @@
 #!/bin/bash
+# Commit CLAUDE.md + docs/WIKI.md together at the end of a session.
+# Usage: ./krimrakora-docs-commit.sh "commit message describing this session's changes"
 set -e
 cd "/Users/rakeshkrishnan/Documents/02_Personal/Claude Projects/krimRakOra"
+
+MSG="${1:?Usage: ./krimrakora-docs-commit.sh \"commit message\"}"
 
 git add CLAUDE.md
 git add docs/WIKI.md
@@ -11,7 +15,7 @@ git status
 
 echo ""
 echo "===== committing ====="
-git commit -m "docs: update CLAUDE.md progress + add project wiki (2026-08-01 session)"
+git commit -m "$MSG"
 
 echo ""
 echo "===== pushing ====="
