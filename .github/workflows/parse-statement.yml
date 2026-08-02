@@ -42,13 +42,12 @@ jobs:
       - name: Write .env
         run: |
           echo "GOOGLE_SHEETS_ID=${{ secrets.GOOGLE_SHEETS_ID }}" >> .env
-          echo "CLAUDE_API_KEY=${{ secrets.CLAUDE_API_KEY }}" >> .env
-          echo "FX_API_KEY=${{ secrets.FX_API_KEY }}" >> .env
-          echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> .env
-	  	  echo "CARD_PASSWORDS=${{ secrets.CARD_PASSWORDS }}" >> .env
-          echo "BASE_CURRENCY=INR" >> .env
-          echo "SALARY_DAY=1" >> .env
-
+		  echo "CLAUDE_API_KEY=${{ secrets.CLAUDE_API_KEY }}" >> .env
+		  echo "FX_API_KEY=${{ secrets.FX_API_KEY }}" >> .env
+		  echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> .env
+		  echo "CARD_PASSWORDS=${{ secrets.CARD_PASSWORDS }}" >> .env
+		  echo "BASE_CURRENCY=INR" >> .env
+		  echo "SALARY_DAY=1" >> .env
       # --- Path 1: triggered by repository_dispatch from n8n ---
       # n8n only sends the Drive file ID + filename (small JSON) — the
       # actual encrypted statement PDF is pulled from Drive here, using the
