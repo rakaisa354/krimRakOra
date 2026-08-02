@@ -4,7 +4,7 @@
 
 ---
 
-## Current Status (as of 2026-07-08)
+## Current Status (as of 2026-08-02)
 
 | Phase | Status | What's done |
 |---|---|---|
@@ -13,7 +13,7 @@
 | Phase 1.5 — PDF Decryption (Module 1) | ✅ Done | `pdf_decrypt.py` + `finance.py decrypt` command, tested against real ICICI statement |
 | Phase 1.6 — PDF-to-md extractors (Module 2/3) | ✅ Done for all cards in scope | icici/rbl/sbi/scapia/kotak done + verified against real statements (57 pdf_to_md tests, all passing). Axis and Emirates NBD dropped — see below |
 | Phase 1.7 — Wire extractors into CLI (Module 4) | ✅ Done | `finance.py parse --pdf <file>` now goes straight from an encrypted statement PDF to Sheets in one command, for all 5 in-scope banks |
-| Phase 2 — n8n WF1+WF2 | ❌ Not started | Skills written, draft JSONs exist |
+| Phase 2 — n8n WF1 | ✅ Verified end-to-end 2026-08-02 | Real statement PDF → Drive → n8n → GitHub Actions → decrypt/parse → 60 real rows written to Transactions sheet → truthful "✅ parsed" Telegram message. Live workflow id is `yO2jvG2di7fSeAz0` (NOT `NIwD3iarrxwH36qj` — see `## Session: 2026-08-02`). WF2 (Telegram agent) still not started. |
 | Phase 3 — n8n WF3+WF4+WF5 | ❌ Not started | Skills written |
 | Phase 4 — Debt + Net Worth | ✅ Done | `debt_planner.py`, `net_worth.py`, `report.py` written + wired |
 | Phase 5 — Hardening | ✅ Done | 87/87 tests pass; test_sheets flake fixed (see below) |
@@ -28,6 +28,12 @@ Kotak **does** have a real credit card (Cashback+ X8502) — parser/extractor bu
 see below.
 
 ### Immediate next action
+> **Superseded 2026-08-01** — this section reflects the 2026-07-08 state, written when Phase 2
+> hadn't started yet. Phase 2 (WF1) has since been built, broken, and mostly re-fixed — see
+> `## Session: 2026-08-01` at the end of this file for what actually happened and what to do
+> next. Left below as historical record, per the project's own "mention, don't delete"
+> Surgical Changes rule.
+
 **Module 4 is done.** `finance.py parse` now accepts `--pdf <file>` as an alternative to
 `--file <md>`: it decrypts, extracts raw text, detects the bank from the raw PDF text (the
 same keyword strings `parsers/__init__.py`'s `detect_card_type` already uses — "ICICI Bank",
@@ -434,3 +440,255 @@ classification, debt engine) are already superseded by the tested, simpler `cate
 so a future session doesn't get confused finding both. Also note: **do not confuse this with
 KRIMRAK_ORA workflows** if browsing the n8n instance — filter by the "KRIMRAK" team project and
 the `WF1`/`WF2` naming (this project) vs `KRIMRAK_ORA —` prefix (the old one).
+
+---
+
+## Session: 2026-08-01 — WF1 debugging & git recovery
+
+### Started with an LLM council run
+Ran the `llm-council` skill (5 independent advisors → peer review → chairman synthesis) against
+the whole project. Verdict: fix the `test_sheets.py` flake note (done, see above), then actually
+**verify WF1 end-to-end for real** before building anything else — the 2026-07-08 note above
+claimed Phase 2 was "code/config done, live import pending," which turned out to be optimistic
+(see below). Order after that: WF3 → WF4/WF5 → WF2 last. Financial data connectors (Plaid-style)
+and Cowork's "finance"/"financial-analysis" plugins were both evaluated and **rejected** —
+they're shaped for corporate/investment-banking use, not personal debt tracking, and add
+recurring cost/third-party data exposure this project has already rejected once (see the
+Supabase/LlamaParse pivot rejection above). No change from that decision.
+
+### Finding 1: WF1 was not actually what CLAUDE.md said it was
+Checked the live n8n workflow (`WF1 — Drive Statement → GitHub Parse`, id `NIwD3iarrxwH36qj`)
+directly via the n8n API. It was **inactive**, had **zero execution history**, and still
+contained the old rejected **Option A** node graph (base64-encodes the PDF, commits it into
+`statements/` via GitHub's Contents API) — not the Option B redesign the 2026-07-08 note claims
+was "manually imported." The manual import apparently didn't take, or was reverted.
+
+**Fix**: had the user re-import the correct local `WF1 — Drive Statement → GitHub Parse.json`
+(Option B: Drive Trigger → sends only `file_id`+`filename` to GitHub → Telegram Notify) via
+n8n's Import from File, reattach the 3 credentials (krimRakOraDrive, krimRakOraGit,
+krimRakOraBot), explicitly rebind the watched Drive folder to
+`1enRhFKT8-0jT_JHbzA1i5DzJwDTbGlgs`, and activate it.
+
+### Finding 2: GitHub `client_payload` bug
+First live test: GitHub rejected the dispatch with `422 client_payload... is not an object`.
+Root cause: the `Trigger GitHub Parse` HTTP Request node used "Using Fields Below" body mode,
+which serializes an expression-interpolated value as a **string**, not a nested object — GitHub's
+`repository_dispatch` API requires `client_payload` to be real JSON. **Fixed** by switching the
+node to raw JSON body mode with an explicit nested object:
+```json
+{
+  "event_type": "parse-statement",
+  "client_payload": { "file_id": "{{ $json.id }}", "filename": "{{ $json.name }}" }
+}
+```
+After this fix: Drive trigger fires, Telegram "received" notification fires, GitHub accepts the
+dispatch. Remaining failures were entirely downstream, in GitHub Actions / `finance.py`.
+
+### Finding 3: ~2 months of work were never pushed (the big one)
+`git status`/`git log` on the user's real machine revealed the local working tree had **all of
+Phase 1.5 through Phase 4**, the WF1 redesign, and `.claude/skills/` — none of it committed past
+`ccc7de3` (June 3), and `origin/main` was still at `d5ef1ee9`. This is why GitHub Actions kept
+running the *old* `parse-statement.yml` (no download step, wrong CLI flag) — the fixed version
+only ever existed locally. **This was the actual root cause of the `FileNotFoundError:
+statements/...` failures**, not a workflow logic bug.
+
+Fixed by staging an explicit, curated file list (via a `.sh` script, see zsh note below) —
+deliberately excluding secrets, `.omc/` (claude-mem's local session-memory cache, may contain
+fragments of past conversations — must never be committed), and two unrelated stray files that
+had ended up in the repo root (`life-path-decoder-review.html`, `life-path-decoder.skill` — a
+different, unrelated project, moved out) — then committing and pushing as
+**`32509b6857e5b0e58b8e76b0166016130595c89f`**. Also added `.omc/` and
+`.claude/settings.local.json` to `.gitignore` (machine-local files that shouldn't be shared).
+
+**Lesson for future sessions**: after any local-only stretch of work, check `git status` /
+`git log origin/main..HEAD` early and often — don't assume "it's on GitHub" without checking.
+
+### Finding 4: CI silently reported false success
+Two stacking bugs, both now fixed in code:
+1. `.github/workflows/parse-statement.yml`'s "Write .env" step never wrote a `CARD_PASSWORDS`
+   line at all — so `finance.py parse --pdf` always failed with `✗ CARD_PASSWORDS not set in
+   .env` in CI even though it's set correctly locally. Fixed by adding
+   `echo "CARD_PASSWORDS=${{ secrets.CARD_PASSWORDS }}" >> .env` to that step.
+2. **Systemic bug in `finance.py`**: every error branch did `click.echo("✗ ...")` then a bare
+   `return` — which exits 0 in Click/Python. GitHub Actions' `if: success()` / `if: failure()`
+   step conditions trust the process exit code, so a *failed* parse was still reported as
+   `if: success()` and sent a false "✅ Statement parsed and written to Sheets." Telegram message.
+   Fixed by changing every error branch in `decrypt` and `parse` (both commands) to
+   `raise SystemExit(1)` after the `click.echo("✗ ...")` — confirmed the legitimate non-error
+   `return`s (dry-run, "no active debts") were left untouched, per Surgical Changes.
+
+**⚠️ Not yet confirmed as of session close**:
+- Whether the commit containing these two fixes was actually pushed — the last GitHub Actions
+  run seen still checked out the pre-fix commit `32509b6`. User confirmed via `git status` that
+  both `finance.py` and `.github/workflows/parse-statement.yml` were staged
+  ("Changes to be committed"), and was given commit+push commands, but the resulting commit hash
+  was never reported back.
+- Whether the `CARD_PASSWORDS` secret actually exists in the GitHub repo's Actions secrets (the
+  `.env`-writing fix is useless if the secret itself was never added — user was asked to check,
+  not yet confirmed).
+- A genuinely successful, real end-to-end WF1 run (Drive upload → Telegram "received" → GH
+  Actions download+decrypt+parse → real new row in the Transactions sheet → Telegram "✅ parsed"
+  that is actually true) **has not yet been observed**. Every run so far either 422'd, 404'd
+  (see below), or false-succeeded.
+
+### Known minor issue (not fixed, low priority)
+The "Archive source file in Google Drive" step 404s — it posts to `N8N_ARCHIVE_WEBHOOK_URL`,
+whose target n8n workflow is inactive. Cosmetic: the statement still gets parsed and written to
+Sheets correctly; only the "move source PDF to Archive folder" cleanup step fails. Fix later by
+activating (or rebuilding) that archive workflow — not urgent.
+
+### Tooling friction notes (for future sessions)
+- **iCloud cloud-placeholder files**: this project folder is under `~/Documents/...` with
+  iCloud "Desktop & Documents Folders" sync on (see Environment note above). Multiple files hit
+  "is a cloud placeholder (not downloaded)" errors when staging from the device this session.
+  Fix: user runs `brctl download .` (whole project, faster than file-by-file) + a short wait,
+  verifies with `cat <file> | wc -c`, then retry.
+- **zsh vs bash paste**: zsh's `interactive_comments` is off by default — pasting a multi-line
+  script with `#` comments directly into an interactive zsh Terminal breaks it
+  (`zsh: command not found: #`), especially with `\` line continuations. Fix: deliver an actual
+  `.sh` file and have the user run `bash script.sh` instead of pasting raw multi-line commands.
+- `.github/workflows/*` files **cannot** be written back via the device-bridge `device_commit_files`
+  tool ("protected file") — the user has to make those edits manually (`open -e <path>`).
+
+### Next session — resume here
+**Keyword: `WF1-verify`**
+
+Say "WF1-verify" (or paste this section) to a new session on this project and have it, in order:
+1. Run `git log -3` and `git status` on the real repo to confirm the `finance.py` +
+   `parse-statement.yml` fix commit actually landed on `origin/main`.
+2. Confirm the `CARD_PASSWORDS` secret exists in the GitHub repo's Settings → Secrets and
+   variables → Actions (ask the user to check, or check via `gh secret list` if the `gh` CLI is
+   authenticated).
+3. Do one real test drop: upload a real (or test) statement PDF to the watched Drive folder and
+   watch it through: Telegram "received" → GitHub Actions run (should show the download step
+   succeed, `CARD_PASSWORDS` present, parse succeed) → a real new row in the Transactions sheet →
+   Telegram "✅ parsed" that is actually true this time.
+4. Only once that's a clean pass, mark Phase 2/WF1 ✅ Done in the status table above and move to
+   WF3 (daily FX sync) per the council's ordering.
+
+---
+
+## Session: 2026-08-02 — WF1 verified end-to-end (finally)
+
+Ran the `WF1-verify` checklist from the note above. Every one of the four steps turned up a new,
+real bug — none of the ones this file previously claimed were the blockers. Full chain, in order:
+
+### Step 1 — fix commit confirmed pushed
+`git log`/`git status` on the real repo confirmed commit `3405786` (the exit-code + CARD_PASSWORDS
+CI fixes from 2026-08-01) landed on `origin/main` — verified via the git reflog
+(`origin/main@{...} update by push`, not just a stale fetch). This part actually held.
+
+### Step 2 — CARD_PASSWORDS secret
+User confirmed it exists in GitHub Settings → Secrets → Actions. (No `gh` CLI on this machine to
+verify independently — took the user's word for it, and step 3 later proved it was in fact set.)
+
+### Finding A — there were TWO n8n workflows both named "WF1 — Drive Statement → GitHub Parse"
+Pulling `NIwD3iarrxwH36qj` (the id this file has referenced since June) via the n8n API showed it
+**still inactive, zero executions, still Option A** — exactly the broken state the 2026-08-01
+session's "Finding 1" claimed to have already fixed. The reimport never actually saved. Turned out
+the user had been editing a **different, second workflow** the whole time:
+**`yO2jvG2di7fSeAz0`** (created 2026-07-07) — correct Option B design, using credentials named
+"KrimRak Aura" / "KrimRak Internal Secret" / "telegram_lifeos_bot" (borrowed-looking names from the
+unrelated astrology-decoder project sharing the same n8n "KRIMRAK" team) instead of the
+`krimRakOra*`-named ones this file documents. Confirmed those credentials are actually valid and
+correctly scoped — the real bot on the user's phone, real access to the right Drive folder — so no
+functional problem, just a naming/documentation mismatch.
+
+**`yO2jvG2di7fSeAz0` is now the correct id for WF1 going forward. `NIwD3iarrxwH36qj` is dead —
+inactive, zero executions, still Option A — and should be deleted next time someone's in the n8n
+UI, to stop this exact confusion from happening a third time.** Not deleted this session (didn't
+want to take a destructive action without the user driving it).
+
+**Lesson**: `mcp__n8n__update_workflow` still hits the same `settings must NOT have additional
+properties` connector bug reported 2026-08-01 (tried again, confirmed still broken) — any n8n
+workflow change has to go through the UI, and **must be re-verified via `get_workflow` after**,
+not trusted from the user saying "done"/"published." This happened twice this session (see Finding
+B) before it actually landed.
+
+### Finding B — `.github/workflows/parse-statement.yml` had a literal tab character breaking the whole file
+First real test drop: Drive trigger fired, GitHub dispatch succeeded (clean 204), Telegram "received"
+fired — but **no GitHub Actions run ever appeared**. No error anywhere; `repository_dispatch`
+simply has nothing to associate the event with if the workflow YAML doesn't parse, so it fails
+completely silently. Root cause: the 2026-08-01 CARD_PASSWORDS fix (Finding 4 in that session) had
+introduced a **literal tab character** on that line instead of spaces — confirmed with
+`yaml.safe_load` (`found character '\t' that cannot start any token`). This had been silently
+broken since the fix commit was pushed; nobody had actually gotten a workflow run to fire since
+then to notice.
+
+Fixed once locally and pushed — except origin/main had **also** picked up two intermediate
+commits ("Update parse-statement.yml" ×2, GitHub's auto-message for web-UI edits) that the user
+had made trying to fix the same tab in the GitHub web editor. Those attempts made it *worse* — the
+browser editor inserted literal tabs on all 6 lines instead of the original 1. Had to
+`git reset --hard origin/main` and refix from that actual current state (not the stale local
+parent), replacing the exact `\t\t  ` prefix with proper spaces, re-validating with
+`yaml.safe_load` before committing this time. **Lesson: don't fix YAML indentation via GitHub's
+web editor in this repo — it inserts real tabs. Edit locally and push instead.**
+
+### Finding C — service account had zero access to the Google Sheet
+With the YAML fixed, GH Actions finally ran for real: checkout → download → decrypt → parse all
+succeeded, but the Sheets write failed with `gspread.exceptions.APIError: [403]: The caller does
+not have permission`. Checked the sheet's sharing settings directly — only `rakaisa@gmail.com`
+(owner) had access; `krimrakora@krimrakora.iam.gserviceaccount.com` (the service account in
+`credentials.json`, used by both `sheets.py` and CI) had **never been shared on this sheet at
+all**, despite Phase 0 supposedly having set this up back in May. User added it as Editor via the
+Sheets UI — confirmed via screenshot (the `get_file_permissions` API call kept not showing the
+grant even after the user added it and wanted twice; trust the actual Sheets UI over that specific
+tool call in this environment, it appears to be unreliable/cached here).
+
+One unrelated thing noticed in that screenshot, flagged but not changed: **General access on the
+sheet is "Anyone with the link — Editor"** — anyone who gets the link can edit this financial
+data, not just view it. Worth tightening to "Restricted" at some point; user's call.
+
+Good news buried in the same failed run: the `if: failure()` Telegram step fired a truthful
+"❌ Statement parse failed" message (not a false "✅") — confirms the 2026-08-01 exit-code-honesty
+fix (Finding 4 there) is genuinely working now.
+
+### Step 3 — clean end-to-end pass, confirmed twice independently
+With the Sheets permission fixed, re-dropped the same test PDF
+(`4315XXXXXXXX4018_347625_Retail_Amazon_NORM.pdf`, a real ICICI Amazon Pay statement) into the
+watched Drive folder. Full chain: Telegram "received" → GitHub Actions run → download → decrypt →
+parse (`✓ 60 rows written, 0 duplicates skipped`, 20 flagged for category review at <80%
+confidence — expected categorizer behavior, not an error) → Telegram "✅ Statement parsed and
+written to Sheets." (genuinely true this time) → independently re-read the Transactions tab via a
+separate tool call and confirmed the 60 real rows are actually there (real merchants, dates,
+amounts, categories, budget_type all populated).
+
+**Known pre-existing minor issue, unchanged**: the "Archive source file in Google Drive" step
+still 404s (`N8N_ARCHIVE_WEBHOOK_URL` target workflow inactive) — cosmetic, doesn't block parsing,
+same as noted 2026-08-01.
+
+### Step 4 — status table updated
+Phase 2/WF1 marked ✅ Done above. Per the council's ordering from 2026-08-01, next up is **WF3
+(daily FX sync)** — `FX_Rates` tab currently only has data through 2026-07-08, consistent with WF3
+never having run.
+
+### Loose ends for next session
+- Delete the dead `NIwD3iarrxwH36qj` workflow in n8n (superseded by `yO2jvG2di7fSeAz0`) to stop
+  the duplicate-name confusion from recurring.
+- Consider renaming `yO2jvG2di7fSeAz0`'s credentials from the borrowed `KrimRak Aura` /
+  `KrimRak Internal Secret` / `telegram_lifeos_bot` names to the project's own `krimRakOra*`
+  naming convention, purely for clarity — they work fine as-is, this is cosmetic.
+- Tighten the Transactions sheet's general access off "Anyone with the link — Editor" if the user
+  wants that (flagged, not acted on).
+- `docs/WIKI.md` (updated this session to match — Phase 2 status, architecture diagram, current
+  state) and `krimrakora-docs-commit.sh` (pre-existing docs-commit helper, not authored this
+  session) were both untracked going into this session; committed together with `CLAUDE.md` at
+  session close.
+- WF2 (Telegram agent) still not started — after WF3/WF4/WF5 per the existing ordering.
+
+### Next session — resume here
+**Keyword: `WF3-build`**
+
+Say "WF3-build" (or paste this section) to a new session on this project and have it, in order:
+1. Read the `n8n-wf3-fx-sync` skill for the workflow runbook, and `scripts/sync_fx.py` for what
+   the local CLI equivalent already does (WF3 is just that on a daily n8n cron, per the
+   `## n8n Workflows (Phase 2+)` table above: `30 0 * * *` / 6am IST).
+2. Build/import the WF3 n8n workflow watching the same `git status` / `get_workflow`-verify
+   discipline this session had to learn the hard way: don't trust a UI "done" — pull the workflow
+   back via the n8n API after any change and confirm it actually saved.
+3. Do one real test run and confirm `FX_Rates` gets a new row for today's date before marking it
+   done.
+4. While in n8n: delete the dead `NIwD3iarrxwH36qj` workflow (see `## Session: 2026-08-02`) if not
+   already done.
+5. Update the status table and this file's session log the same way this session did, then move
+   to WF4 (daily spend summary) per the existing ordering.
