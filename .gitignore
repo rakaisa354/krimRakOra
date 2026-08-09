@@ -20,3 +20,4 @@ Scapia.md
 WF*.json
 .omc/
 .claude/settings.local.json
+graphify-out/
