@@ -14,7 +14,7 @@
 | Phase 1.6 — PDF-to-md extractors (Module 2/3) | ✅ Done for all cards in scope | icici/rbl/sbi/scapia/kotak done + verified against real statements (57 pdf_to_md tests, all passing). Axis and Emirates NBD dropped — see below |
 | Phase 1.7 — Wire extractors into CLI (Module 4) | ✅ Done | `finance.py parse --pdf <file>` now goes straight from an encrypted statement PDF to Sheets in one command, for all 5 in-scope banks |
 | Phase 2 — n8n WF1 | ✅ Verified end-to-end 2026-08-02 | Real statement PDF → Drive → n8n → GitHub Actions → decrypt/parse → 60 real rows written to Transactions sheet → truthful "✅ parsed" Telegram message. Live workflow id is `yO2jvG2di7fSeAz0` (NOT `NIwD3iarrxwH36qj` — see `## Session: 2026-08-02`). WF2 (Telegram agent) still not started. |
-| Phase 3 — n8n WF3+WF4+WF5 | ❌ Not started | Skills written |
+| Phase 3 — n8n WF3+WF4+WF5 | 🔶 WF3+WF4 done 2026-08-09 | WF3 (daily FX sync) built, verified, active — id `ArQY0BWqFYQLTRVA`. WF4 (daily spend summary) built, verified, active — id `LpmXgr7n8UQNjJ5T`, see `## Session: 2026-08-09`. WF5 not started — skill written |
 | Phase 4 — Debt + Net Worth | ✅ Done | `debt_planner.py`, `net_worth.py`, `report.py` written + wired |
 | Phase 5 — Hardening | ✅ Done | 87/87 tests pass; test_sheets flake fixed (see below) |
 
@@ -147,8 +147,8 @@ python3 scripts/quick_add.py --merchant "Zomato" --amount 350
 ## n8n Workflows (Phase 2+)
 - **WF1** Drive → GH Actions `parse-statement` → `finance.py parse` → Sheets
 - **WF2** Telegram AI Agent (Claude haiku, memory, quick-add, queries)
-- **WF3** Daily FX sync 6am IST (cron `30 0 * * *`)
-- **WF4** Daily spend summary 9pm IST (cron `30 15 * * *`)
+- **WF3** Daily FX sync 6am IST (cron `30 0 * * *`) — ✅ built & verified 2026-08-02, id `ArQY0BWqFYQLTRVA`, active, in KRIMRAK project
+- **WF4** Daily spend summary 9pm IST (cron `30 15 * * *`) — ✅ built & verified 2026-08-09, id `LpmXgr7n8UQNjJ5T`, active, in KRIMRAK project
 - **WF5** Monthly report 1st of month 8am IST (cron `30 2 1 * *`)
 - **WF6** Error handler — 3x retry, dead-letter to Drive, Telegram alert
 - Draft JSONs: `WF1 — Drive Statement → GitHub Parse.json`, `WF2 — Telegram AI Agent.json`
@@ -677,6 +677,10 @@ never having run.
 - WF2 (Telegram agent) still not started — after WF3/WF4/WF5 per the existing ordering.
 
 ### Next session — resume here
+> **Superseded 2026-08-02** — WF3-build is done, see
+> `## Session: 2026-08-02 — WF3 built & verified` below for what actually happened. Left below,
+> per this project's own "mention, don't delete" Surgical Changes rule.
+
 **Keyword: `WF3-build`**
 
 Say "WF3-build" (or paste this section) to a new session on this project and have it, in order:
@@ -692,3 +696,208 @@ Say "WF3-build" (or paste this section) to a new session on this project and hav
    already done.
 5. Update the status table and this file's session log the same way this session did, then move
    to WF4 (daily spend summary) per the existing ordering.
+
+---
+
+## Session: 2026-08-02 (cont.) — WF3 built & verified
+
+Ran the `WF3-build` checklist from the note above, same session day.
+
+### Dead workflow status
+`NIwD3iarrxwH36qj` was already `isArchived: true` when checked via `get_workflow` — someone (or
+n8n itself) had archived it since the last session. Archived is not the same as hard-deleted, but
+it no longer shows in the default workflow list, which was the actual problem (duplicate-name
+confusion). Left archived rather than hard-deleting — user can delete it for real if they want,
+not done without them driving it (same reasoning as last session).
+
+### Built WF3, learned `create_workflow` works where `update_workflow` doesn't
+Built the 8-node workflow from the skill runbook (Schedule Trigger `30 0 * * *` → HTTP GET FX API
+→ Code: parse/compute 8 currencies → Sheets Append, with an error branch: Sheets Read last rates →
+Code: carry forward → Sheets Append + Telegram alert). `mcp__n8n__create_workflow` (a different
+API endpoint than `update_workflow`) worked cleanly — the workflow saved correctly on the first
+try, confirmed via an immediate `get_workflow` re-fetch. **`update_workflow` is still broken**
+(hit the exact same `settings must NOT have additional properties` error reported 2026-08-01 and
+reconfirmed 2026-08-02 — third time now) — any *edit* to an existing workflow still has to go
+through the n8n UI; only brand-new workflow creation works via the API. Used `$vars.FX_API_KEY`
+(not `$env`, per the standing n8n Cloud rule) for the API key, deliberately not hardcoded like
+WF1's Drive folder ID — it's a real secret and this JSON is git-committed.
+
+`create_workflow` has no project parameter — the new workflow landed in the user's **personal**
+n8n project by default, not the KRIMRAK team project WF1/WF2 live in. User moved it manually in
+the UI; confirmed via `get_workflow` afterward (`projectId` now `4KP0kUrAplXZ3AZN` / "KRIMRAK").
+
+User also completed the two other manual setup steps this required — added an n8n Variable
+`FX_API_KEY` and attached a `google_lifeos` Google Sheets OAuth2 credential to both Sheets nodes
+— both independently re-verified via `get_workflow`, not taken on trust.
+
+### Real bug found: `appendOrUpdate` silently corrupted data
+First test run "succeeded" (green execution, no errors) but independently re-reading the
+`FX_Rates` sheet (not just trusting the execution status — same lesson as WF1's false-success
+finding from 2026-08-01) showed today's 8 rows were wrong: **USD was missing entirely and JPY was
+duplicated** (`JPY, GBP, EUR, SGD, AED, THB, MYR, JPY` instead of the expected 8 distinct
+currencies). Root cause: the Sheets Append node's `appendOrUpdate` operation was configured with a
+two-column match (`date` + `currency_code`, per the skill doc), but in practice it behaved like a
+**date-only** match — since all 8 items in a batch share the same `date`, each subsequent
+currency's write matched and overwrote the row from the previous currency instead of inserting its
+own. A second test run (before the bug was caught) compounded it further.
+
+**Fix**: switched the node from `appendOrUpdate` to plain `append`. Upsert semantics weren't
+actually needed here — a given `(date, currency_code)` pair is only ever written once per real run
+(the daily 6am cron); `appendOrUpdate` was solving a problem that doesn't really exist in
+production use. Trade-off, flagged in the workflow's sticky note: manually re-running the workflow
+more than once on the same day will now create duplicate rows for that day (acceptable — dedupe
+manually if it happens, same category of issue as the local `sync_fx.py` CLI already has its own
+`already_synced` guard for the same reason).
+
+Tried pushing this one-field fix via `update_workflow` first — hit the same broken-`update_workflow`
+error again. User made the fix manually in the n8n UI (Sheets Append node → Operation → Append,
+cleared the match-on columns) and saved — which also activated the workflow (`active: true`) as a
+side effect, which is actually the desired end state (daily cron now live).
+
+### Clean verification
+Re-read the `FX_Rates` sheet independently after the fix: exactly 8 rows for 2026-08-02, one row
+per currency (USD 95.511, GBP 128.4027, EUR 109.7695, SGD 74.3494, AED 26.001, THB 2.8555, MYR
+23.3699, JPY 0.5995), no duplicates, nothing missing.
+
+**Not yet tested**: the error branch (Sheets Read last rates → carry-forward → Telegram alert) —
+no API failure was exercised this session. Also, per the skill runbook, the Telegram alert's error
+output is meant to eventually call WF6 (error handler) — WF6 doesn't exist yet (Phase 3, WF4/WF5
+next per ordering, WF6 after that), so that edge stays unwired for now.
+
+### Loose ends for next session
+- WF3's error/fallback branch is unexercised — worth a deliberate bad-API-key test at some point,
+  not blocking since the happy path (the actual daily job) is verified.
+- `NIwD3iarrxwH36qj` still exists in archived state, not hard-deleted — user's call whenever they
+  want it gone for good.
+- WF4 (daily spend summary, 9pm IST) is next per the existing ordering.
+
+### Next session — resume here
+> **Superseded 2026-08-09** — WF4-build is done, see
+> `## Session: 2026-08-09 — WF4 built & verified` below for what actually happened. Left below,
+> per this project's own "mention, don't delete" Surgical Changes rule.
+
+**Keyword: `WF4-build`**
+
+Say "WF4-build" (or paste this section) to a new session on this project and have it, in order:
+1. Read the `n8n-wf4-daily-summary` skill for the workflow runbook.
+2. Build the WF4 n8n workflow using `create_workflow` (not `update_workflow` — confirmed broken a
+   third time this session) for the initial build, then hand any post-creation edits to the user
+   via the n8n UI, re-verifying every change with `get_workflow` afterward — never trust a UI
+   "done" on its own.
+3. Watch for the same class of bug WF3 had: independently re-read whatever sheet/tab the workflow
+   writes to after a test run — don't trust a green execution status alone, verify the actual data.
+4. Do one real test run, confirm the output is correct, then update the status table and this
+   file's session log the same way this session did, and move to WF5 (monthly report) per the
+   existing ordering.
+
+---
+
+## Session: 2026-08-09 — WF4 built & verified
+
+Ran the `WF4-build` checklist from the note above, plus an `llm-council` pass before build (user
+explicitly asked for the council first) and used oh-my-claudecode's n8n MCP tools for the actual
+build. Full chain, in order:
+
+### Council caught a real schema bug before any code was written
+Convened the 5-advisor council on "should we proceed with WF4 now, following the same process as
+WF3." All five converged: yes, but fix a bug first. Comparing the `n8n-wf4-daily-summary` skill
+runbook's Code node against CLAUDE.md's own schema table (`## Transaction schema` /
+`## Budget split`) turned up a real mismatch nobody had caught: the skill's Code node aggregated
+spend using budget_type keys `needs`/`wants`/`savings` (plural) — but the actual Transactions
+sheet stores `need`/`want`/`save`/`debt`/`petty` (singular, `save` not `savings`). Unfixed, three
+of five categories would have silently read ₹0 every night, forever, with a green execution and no
+error — the same failure shape as WF3's `appendOrUpdate` bug from 2026-08-02, except worse because
+it would land directly in the user's face every night instead of in a rarely-checked FX_Rates tab.
+Fixed the skill runbook's Code node (`.claude/skills/n8n-wf4-daily-summary.md`) before touching
+n8n, and added a self-check the council also suggested: sum the mapped buckets and compare against
+the raw total, warning via Telegram if an unmapped budget_type value ever shows up (catches the
+*next* schema drift automatically instead of relying on a human noticing months later).
+
+### Build: `create_workflow` worked cleanly again
+Same pattern as WF3 — `create_workflow` (not `update_workflow`) built the whole 7-node graph
+(Setup Notes sticky, Cron Trigger, Sheets Read: Transactions, Sheets Read: Budget, Code: Aggregate
+& Flag, If: Has Transactions?, two Telegram nodes) in one call, confirmed via immediate
+`get_workflow` re-fetch. Landed in the user's personal project again (same as WF3's first attempt)
+— user moved it to KRIMRAK manually, re-verified via `get_workflow` after. User also attached
+`google_lifeos` (Sheets OAuth2) and `telegram_lifeos_bot` (Telegram) credentials manually and
+activated it — each step re-verified via `get_workflow`, not taken on trust. User asked why
+"lifeos"-named credentials were being used on a KrimRak workflow — same answer as WF1/WF3's
+2026-08-02 finding: cosmetic naming leftover from an unrelated project sharing this n8n account,
+credentials themselves are correct and already proven to work. Not renamed (still on the loose-end
+list from 2026-08-02, still not urgent).
+
+### Real bug 1 — parallel fan-in race condition
+First test run threw `ExpressionError: Node 'Sheets Read: Budget' hasn't been executed` inside the
+Code node. Root cause: both Sheets Read nodes originally fanned into the Code node's same input in
+parallel (mirroring how a Code node references other nodes by name via `$('NodeName')`) — but in
+n8n, a node with multiple incoming connections fires as soon as the FIRST predecessor completes,
+it does not wait for all of them. Fixed by chaining the two Sheets Read nodes sequentially
+(Trigger → Budget → Transactions → Code) instead of fanning in parallel. This is a new lesson for
+this project's n8n-wiring notes, distinct from anything WF1/WF3 hit.
+
+### Real bug 2 — empty Budget sheet silently killed the whole run
+User asked "shouldn't we set a budget in the Budget sheet?" — turned out the sheet had zero rows,
+and n8n's default behavior is to halt the entire workflow when a node produces zero output items.
+With Budget wired before Transactions in the new sequential chain, an empty Budget sheet meant
+**no Telegram message at all**, not even for real spend that happened — the budget-warning feature
+being unconfigured shouldn't have been able to silence the core "did I spend money today" signal.
+Fixed by setting `alwaysOutputData: true` on both Sheets Read nodes so an empty result doesn't
+halt downstream execution. User then populated the Budget sheet for 2026-08 using CLAUDE.md's
+40/30/20/10 need/debt/save/want split on a stated ₹183,000/month income (need 73200, debt 54900,
+save 36600, want 18300; petty left to the user's own habits per CLAUDE.md's "tracked separately"
+note).
+
+### Real bug 3 — the 5x-inflation bug, found via a genuinely confusing symptom
+Test run after populating Budget showed `total: 2500, needs: 2500, txn_count: 5` for a single real
+₹500 test transaction. User asked directly why. First hypothesis (duplicate rows in the sheet) was
+wrong — user confirmed only one row existed for that date. Second hypothesis (n8n UI showing
+accumulated output from repeated manual node-execute clicks) was also wrong — a clean single "Test
+workflow" run still showed 5x. The actual root cause, found by counting: 5 exactly matches the
+number of Budget rows just added (need/want/debt/save/petty). In n8n, a node downstream of another
+node that outputs multiple items re-executes once *per incoming item* by default — so "Sheets
+Read: Transactions," chained directly after "Sheets Read: Budget" (which now output 5 items),
+re-ran its full sheet read 5 times, and `$('Sheets Read: Transactions').all()` in the Code node
+collected all 5 runs' worth of rows, inflating every total by exactly 5x. This was a bug introduced
+by this session's own Bug 1 fix (the sequential chaining), not something inherent to the original
+design — fixed by setting `executeOnce: true` on the Transactions node so it runs exactly once
+regardless of how many Budget rows exist. Cross-checked via `list_executions` / `get_execution`
+against the actual n8n execution record rather than trusting the UI node-output panel alone, since
+the panel had already produced one red herring (the accumulated-clicks theory) earlier in the same
+debugging pass.
+
+### Clean verification, both branches
+Final test run: `txn_count: 1, total: 500, needs: 500` for the one real Blinkit test row — matched
+by hand. Telegram message confirmed correct. Deleted the test row, re-triggered: `has_transactions:
+false`, Telegram sent "✓ No spending logged today" — both branches of the `If: Has Transactions?`
+switch verified against real data, not just a green execution.
+
+### Loose ends for next session
+- WF4's weekly-budget-warning branch (the `pct >= 80` logic) is unexercised — both test runs stayed
+  well under any weekly threshold. Worth a deliberate over-budget test at some point, not blocking
+  since the core spend-reporting path (the actual daily job) is verified.
+- Same `NIwD3iarrxwH36qj` / general-access-sheet loose ends from 2026-08-02 remain untouched.
+- `petty` has no Budget row yet (user chose to leave it per CLAUDE.md's "tracked separately" note)
+  — fine as-is, the Code node already handles a missing budget row for any type gracefully.
+- WF5 (monthly report) is next per the existing ordering.
+
+### Next session — resume here
+**Keyword: `WF5-build`**
+
+Say "WF5-build" (or paste this section) to a new session on this project and have it, in order:
+1. Read the `n8n-wf5-monthly-report` skill for the workflow runbook, and diff it against
+   CLAUDE.md's schema tables (`## Transaction schema`, `## Budget split`) *before* building —
+   the WF4 session found a real singular/plural budget_type mismatch this way; check whether WF5's
+   runbook has the same class of bug before writing any node.
+2. Build using `create_workflow` for the initial build (not `update_workflow` — though note WF4's
+   session found `update_workflow` actually worked for connections/node-property-only edits after
+   creation; still don't rely on it for a first build), then hand credential/project-move steps to
+   the user via the n8n UI, re-verifying every change with `get_workflow` afterward.
+3. If any node is chained downstream of another node that can output more than one item, check
+   whether it needs `executeOnce: true` — WF4 hit a real 5x-inflation bug from this exact pattern
+   when a downstream Sheets Read re-executed once per incoming item. Also set `alwaysOutputData:
+   true` on any Sheets Read whose result feeds a decision that shouldn't be silently skipped if the
+   sheet is empty.
+4. Do a real test run and cross-check via `list_executions`/`get_execution`, not just the UI node
+   panel (it can show misleading accumulated data). Verify by hand-summing real data, not just a
+   green execution or a plausible-looking message.
+5. Update the status table and this file's session log the same way this session did.

@@ -108,14 +108,21 @@ Object.entries(byType).forEach(([type, spent]) => {
   }
 });
 
+// Self-check: catch unmapped budget_type values (schema drift) instead of silently under-reporting
+const KNOWN_TYPES = ['need', 'want', 'debt', 'save', 'petty'];
+const unmapped = Object.keys(byType).filter(t => !KNOWN_TYPES.includes(t));
+if (unmapped.length > 0) {
+  warnings.push(`⚠ Unmapped budget_type(s) seen: ${unmapped.join(', ')} — check schema drift`);
+}
+
 return [{
   json: {
     today,
     total: total.toFixed(0),
-    needs: (byType['needs'] || 0).toFixed(0),
-    wants: (byType['wants'] || 0).toFixed(0),
+    needs: (byType['need'] || 0).toFixed(0),
+    wants: (byType['want'] || 0).toFixed(0),
     debt: (byType['debt'] || 0).toFixed(0),
-    savings: (byType['savings'] || 0).toFixed(0),
+    savings: (byType['save'] || 0).toFixed(0),
     petty: (byType['petty'] || 0).toFixed(0),
     warnings: warnings.join('\n'),
     has_transactions: txns.length > 0,
