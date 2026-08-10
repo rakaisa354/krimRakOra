@@ -66,7 +66,8 @@ jobs:
         run: |
           FILE="${{ github.event.client_payload.filename }}"
           echo "Parsing: $FILE"
-          python3 finance.py parse --pdf "incoming/$FILE"
+          python3 finance.py parse --pdf "incoming/$FILE" 2>&1 | tee parse_output.log
+          exit ${PIPESTATUS[0]}
 
       # --- Path 2: manual workflow_dispatch ---
       - name: Parse statement (manual trigger)
@@ -74,7 +75,8 @@ jobs:
         run: |
           FILE="${{ github.event.inputs.filename }}"
           echo "Parsing: $FILE"
-          python3 finance.py parse --file "statements/$FILE"
+          python3 finance.py parse --file "statements/$FILE" 2>&1 | tee parse_output.log
+          exit ${PIPESTATUS[0]}
 
       # --- Path 3: push trigger — parse all new/changed MDs ---
       - name: Parse all changed statements (push trigger)
@@ -89,7 +91,11 @@ jobs:
           echo "$FILES" | while read file; do
             [ -z "$file" ] && continue
             echo "Parsing: $file"
-            PYTHONPATH=. python3 finance.py parse --file "$file"
+            PYTHONPATH=. python3 finance.py parse --file "$file" 2>&1 | tee -a parse_output.log
+            exit_code=${PIPESTATUS[0]}
+            if [ "$exit_code" -ne 0 ]; then
+              exit $exit_code
+            fi
           done
 
       # --- Archive: notify n8n to move the source file to Archive folder ---
@@ -111,16 +117,38 @@ jobs:
       - name: Notify Telegram on success
         if: success()
         run: |
+          # Pull finance.py's own summary line ("✓ N rows written, M duplicates
+          # skipped" + optional "⚠ N rows need category review") out of the
+          # captured output instead of a generic "parsed" message — a silent
+          # "0 rows written, 60 duplicates skipped" run used to look identical
+          # to a real 60-row import from Telegram alone.
+          SUMMARY=$(grep -E "^(✓|⚠)" parse_output.log 2>/dev/null | head -5)
+          if [ -z "$SUMMARY" ]; then
+            SUMMARY="(no row summary captured)"
+          fi
+          MSG=$(printf "✅ Statement parsed and written to Sheets.\n\n%s" "$SUMMARY")
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
             -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-            -d text="✅ Statement parsed and written to Sheets."
+            --data-urlencode text="$MSG"
 
       - name: Notify Telegram on failure
         if: failure()
         run: |
+          # Surface finance.py's own "✗ ..." error line (or the last line of a
+          # Python traceback) when available, instead of only a bare link the
+          # user has to open on a laptop to make any sense of.
+          REASON=$(grep -E "^✗" parse_output.log 2>/dev/null | tail -1)
+          if [ -z "$REASON" ]; then
+            REASON=$(tail -1 parse_output.log 2>/dev/null)
+          fi
+          if [ -z "$REASON" ]; then
+            REASON="Failed before parsing started (setup/download/credentials step) — check the run log."
+          fi
+          MSG=$(printf "❌ Statement parse failed.\nReason: %s\n\nDetails: %s/%s/actions/runs/%s" \
+            "$REASON" "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}")
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
             -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-            -d text="❌ Statement parse failed. Check GitHub Actions: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            --data-urlencode text="$MSG"
 
       - name: Clean up downloaded statement and credentials
         if: always()
