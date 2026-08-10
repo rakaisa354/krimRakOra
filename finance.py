@@ -103,13 +103,17 @@ def parse(file, pdf, dry_run):
         return
 
     if new_rows:
-        sheet_rows = [
-            [r["date"], r["card_account"], r["merchant"], r["amount"],
-             r["currency"], r["exchange_rate"], r["amount_inr"],
-             r["category"], r["subcategory"], r["budget_type"],
-             r["payment_method"], r["notes"]]
-            for r in new_rows
-        ]
+        sheet_rows = []
+        for r in new_rows:
+            notes = r["notes"]
+            if r.get("_confidence", 100) < 80:
+                notes = (notes or "") + f" [review: confidence {r['_confidence']}%]"
+            sheet_rows.append(
+                [r["date"], r["card_account"], r["merchant"], r["amount"],
+                 r["currency"], r["exchange_rate"], r["amount_inr"],
+                 r["category"], r["subcategory"], r["budget_type"],
+                 r["payment_method"], notes]
+            )
         append_rows("Transactions", sheet_rows)
 
     click.echo(f"✓ {len(new_rows)} rows written, {skipped} duplicates skipped")
