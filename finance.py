@@ -10,6 +10,7 @@ from pdf_to_md import (
     icici_pdf_text_to_md, rbl_pdf_text_to_md, sbi_pdf_text_to_md,
     scapia_pdf_text_to_md, kotak_pdf_text_to_md,
 )
+from income_parser import is_kotak_savings_statement, extract_kotak_savings_income
 from config import CARD_PASSWORDS
 
 PDF_TO_MD = {
@@ -40,6 +41,38 @@ def decrypt(file, out):
         click.echo(f"✗ {e}")
         raise SystemExit(1)
 
+def _parse_kotak_savings_income(raw_text, dry_run):
+    """Kotak savings account statement: extract salary/income credits only
+    and write to the Income sheet, not Transactions — the account also has
+    hundreds of unrelated debits (SIPs, UPI transfers, CC bill payments)
+    that this deliberately ignores, per the user's 2026-08-10 scope call."""
+    rows = extract_kotak_savings_income(raw_text)
+
+    existing = read_all("Income")
+    existing_keys = {
+        (r["date"], r["source"], float(r["amount"]))
+        for r in existing
+        if r.get("amount") not in ("", None)
+    }
+    new_rows = [r for r in rows if (r["date"], r["source"], r["amount"]) not in existing_keys]
+    skipped = len(rows) - len(new_rows)
+
+    if dry_run:
+        for r in new_rows:
+            click.echo(f"{r['date']} | {r['source']} | ₹{r['amount']:.2f}")
+        click.echo(f"\n{len(new_rows)} new income row(s) (dry run — not written)")
+        return
+
+    if new_rows:
+        sheet_rows = [
+            [r["date"], r["source"], r["amount"], r["currency"],
+             r["exchange_rate"], r["amount_inr"], r["type"]]
+            for r in new_rows
+        ]
+        append_rows("Income", sheet_rows)
+
+    click.echo(f"✓ {len(new_rows)} income rows written, {skipped} duplicates skipped")
+
 @cli.command()
 @click.option("--file", default=None, help="Path to CC statement .md file")
 @click.option("--pdf", default=None, help="Path to encrypted statement PDF (decrypt + extract + convert, then parse)")
@@ -64,6 +97,9 @@ def parse(file, pdf, dry_run):
             click.echo(f"✗ {e}")
             raise SystemExit(1)
         raw_text = extract_text(decrypted)
+        if is_kotak_savings_statement(raw_text):
+            _parse_kotak_savings_income(raw_text, dry_run)
+            return
         try:
             card_type = detect_card_type(raw_text)
         except ValueError as e:
