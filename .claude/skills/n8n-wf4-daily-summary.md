@@ -75,10 +75,13 @@ const today = new Date().toISOString().split('T')[0];
 const currentMonth = today.slice(0, 7); // "2026-06"
 
 // --- Transactions: filter today ---
+// Do NOT filter to amount_inr > 0 -- real statements contain charge/reversal/remainder
+// triplets (a purchase immediately reversed, then re-charged at the true net amount, same
+// pattern documented in CLAUDE.md for Kotak/ICICI EMI conversions, and the same bug WF5 had
+// -- caught by the user hand-verifying a WF5 total against raw sheet data, 2026-08-09).
+// Filtering out negatives double-counts every reversed charge as real spend.
 const allTxns = $('Sheets Read: Transactions').all().map(i => i.json);
-const txns = allTxns.filter(t =>
-  t.date === today && parseFloat(t.amount_inr) > 0
-);
+const txns = allTxns.filter(t => t.date === today);
 
 // Aggregate by budget_type
 const byType = {};

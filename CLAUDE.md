@@ -14,7 +14,7 @@
 | Phase 1.6 — PDF-to-md extractors (Module 2/3) | ✅ Done for all cards in scope | icici/rbl/sbi/scapia/kotak done + verified against real statements (57 pdf_to_md tests, all passing). Axis and Emirates NBD dropped — see below |
 | Phase 1.7 — Wire extractors into CLI (Module 4) | ✅ Done | `finance.py parse --pdf <file>` now goes straight from an encrypted statement PDF to Sheets in one command, for all 5 in-scope banks |
 | Phase 2 — n8n WF1 | ✅ Verified end-to-end 2026-08-02 | Real statement PDF → Drive → n8n → GitHub Actions → decrypt/parse → 60 real rows written to Transactions sheet → truthful "✅ parsed" Telegram message. Live workflow id is `yO2jvG2di7fSeAz0` (NOT `NIwD3iarrxwH36qj` — see `## Session: 2026-08-02`). WF2 (Telegram agent) still not started. |
-| Phase 3 — n8n WF3+WF4+WF5 | 🔶 WF3+WF4 done 2026-08-09 | WF3 (daily FX sync) built, verified, active — id `ArQY0BWqFYQLTRVA`. WF4 (daily spend summary) built, verified, active — id `LpmXgr7n8UQNjJ5T`, see `## Session: 2026-08-09`. WF5 not started — skill written |
+| Phase 3 — n8n WF3+WF4+WF5 | ✅ WF3+WF4+WF5 done 2026-08-09 | WF3 (daily FX sync) built, verified, active — id `ArQY0BWqFYQLTRVA`. WF4 (daily spend summary) built, verified, active — id `LpmXgr7n8UQNjJ5T`. WF5 (monthly report) built, verified, active — id `BxYQfsOgCooNMeri`, see `## Session: 2026-08-09 — WF5 built & verified`. WF6 (error handler) not started — skill exists |
 | Phase 4 — Debt + Net Worth | ✅ Done | `debt_planner.py`, `net_worth.py`, `report.py` written + wired |
 | Phase 5 — Hardening | ✅ Done | 87/87 tests pass; test_sheets flake fixed (see below) |
 
@@ -901,3 +901,176 @@ Say "WF5-build" (or paste this section) to a new session on this project and hav
    panel (it can show misleading accumulated data). Verify by hand-summing real data, not just a
    green execution or a plausible-looking message.
 5. Update the status table and this file's session log the same way this session did.
+
+---
+
+## Session: 2026-08-09 — WF5 built & verified
+
+Ran the `WF5-build` checklist from the note above, using an `llm-council` pass (5 advisors +
+chairman synthesis) before writing any code, plus the oh-my-claudecode n8n MCP tools for the
+build. Full chain, in order.
+
+### Council-independent pre-build audit caught 4 real schema mismatches
+Before convening the council, diffed the `n8n-wf5-monthly-report.md` runbook's Code node
+against `scripts/setup_sheets.py` (source of truth) field-by-field. Found four mismatches, all
+of the same class as WF4's `needs/wants/savings` bug — the runbook was hand-written against a
+plausible-sounding schema that didn't match reality:
+- Debts: runbook used `account_name`/`balance_inr`/`original_inr` → actual columns are
+  `debt_name`/`total_outstanding`/`initial_amount`.
+- Net_Worth: runbook used `net_worth_inr` and sorted rows by `date` → actual column is
+  `net_worth`, and there is no `date` column at all on this sheet, only `month`. This one is
+  structural, not a rename — the sort logic itself needed rewriting.
+- Goals: runbook used `saved_inr` → actual column is `saved_so_far`.
+- Income: runbook filtered `r.month === reportMonth` → Income has no `month` column, only
+  `date`; fixed to `r.date.startsWith(reportMonth)`.
+
+Ran the council on "should we proceed now, and what else to check" with this finding already in
+hand. All five advisors converged on proceed, with one added catch worth keeping: the Outsider
+flagged that a partial diff finding 4 bugs can create false confidence it found *all* of them —
+re-audited every field the Code node touches (not just the four that stood out) before writing
+any node, confirmed no fifth mismatch existed.
+
+### First wiring draft reproduced the exact bug it was trying to avoid
+Initial redesign fanned all 5 Sheets Read nodes in parallel directly into `Code: Build Report`
+with no Merge node, reasoning "nothing here is chained after a multi-item node, so WF4's race
+can't happen." That reasoning was wrong and caught before build (by the Contrarian advisor,
+independently re-derived by re-reading n8n's actual multi-input semantics): a node with multiple
+incoming connections in n8n fires as soon as the FIRST predecessor completes, not after all of
+them — that's what WF4 actually hit, and a 5-way parallel fan-in reproduces it regardless of
+whether a Merge node sits downstream. Corrected to WF4's actual proven fix: sequential chaining
+(Transactions → Income → Debts → Goals → Net_Worth → Code: Build Report), `alwaysOutputData:
+true` on all 5 reads, `executeOnce: true` on every node downstream of a node that can emit more
+than one item (Income/Debts/Goals/Net_Worth/Code: Build Report — not Transactions, whose only
+parent always emits exactly one item).
+
+### Build: `create_workflow` clean, landed in personal project again
+`create_workflow` built the full 11-node graph (Setup Notes sticky, Cron Trigger, Code: Determine
+Report Month, 5 sequential Sheets Reads, Code: Build Report, Convert to File, Drive Upload,
+Telegram) in one call, confirmed via immediate `get_workflow` re-fetch — id `BxYQfsOgCooNMeri`.
+Landed in the user's personal project again (same as WF3/WF4's first attempt) — user moved it to
+KRIMRAK manually and activated it, re-verified via `get_workflow` after (`projectId`
+`4KP0kUrAplXZ3AZN`, `active: true`). Reused WF3/WF4's exact credential IDs (`google_lifeos` for
+all Sheets reads, `telegram_lifeos_bot` for the summary) and WF1's `KrimRak Aura` Google Drive
+OAuth2 credential for the new Drive upload node — first workflow in this project to need Drive
+write access outside WF1. User supplied the `reports/` Drive folder ID
+(`1s3pAPWFbqdqgsIzrgiS8Ccjw439zXC-f`) since nothing in the repo had it recorded.
+
+### Real bug found on the first test run: truthy-but-blank rows from empty sheets
+Test run (against real July 2026 transaction data, no Debts/Goals/Net_Worth/Income rows yet)
+"succeeded" — Telegram sent, Drive file created — but the report itself showed
+`% paid off: NaN%` and `undefined: NaN%` under Goals. Root cause: `Sheets Read: Debts` and
+`Sheets Read: Goals` returned a single blank-ish row from `getAll` on an all-header sheet, not a
+genuinely empty array — so `debts.sort(...)[0]` and the Goals `.map()` picked up a *truthy* `{}`
+object instead of `undefined`, defeating the `priorityDebt ? ... : 0` fallback the code already
+had (that fallback assumed "no debt" meant an empty array, which held for `Net_Worth`'s simpler
+`nwRows[0]?.net_worth || 0` pattern but not for the Debts/Goals logic, which branches on
+truthiness of the whole row object). Fixed by filtering both reads to rows with a real
+`debt_name`/`goal_name` before use — pushed via `update_workflow` (worked cleanly for this
+node-content-only edit, consistent with WF4's finding that `update_workflow` is broken for
+brand-new workflow creation but fine for editing an existing one), re-verified via `get_workflow`
+immediately after.
+
+### Clean verification
+Re-triggered manually. Hand-checked the output against the raw Transactions data pulled via
+`get_execution`: `need: ₹11949 + want: ₹54568 = ₹66517` (1 rupee off the reported `₹66516` due
+to independent `toFixed(0)` rounding per category vs. the unrounded total — not a bug), matching
+a manual sum of the 60 real July rows with `amount_inr > 0`. Telegram message and Drive file both
+confirmed correct. Debts/Goals/Net_Worth/Income were genuinely empty this month (no real data
+entered yet) and now render as `N/A`/`₹0`/no lines instead of `NaN` — the intended graceful
+behavior once real Debts/Goals/Net_Worth data exists.
+
+### Real bug 3 (2026-08-09, user-caught after the "verified" close above): amount_inr > 0 filter was wrong
+The session above closed with a report showing `Total Spend: ₹66516` and called it verified —
+hand-summed against the raw sheet data, which is exactly this project's standing rule, but the
+hand-sum itself only checked that the code's positive-only filter matched its own output
+consistently, not that the filter was the right thing to do. User caught it by independently
+computing the expected net total (-32564.71) from the raw ledger and comparing against the
+report's +66516 — they didn't match. Root cause: `Code: Build Report`'s Transactions filter
+excluded `amount_inr <= 0` rows. Real statements contain charge/reversal/remainder triplets (a
+purchase immediately reversed, then re-charged at the true net amount — same accounting pattern
+CLAUDE.md already documents for Kotak/ICICI EMI conversions) — filtering to positives only
+double-counted every reversed charge as real spend instead of netting it out. Fixed by removing
+the `amount_inr > 0` filter entirely; verified by hand-summing ALL July `amount_inr` values
+(positive and negative) to -32564.71, matching the user's independently-computed expectation.
+Pushed via `update_workflow`, re-verified via `get_workflow`, re-tested: Telegram showed
+`Spent: ₹-32565`, matching.
+
+**Lesson, sharper than the existing "hand-verify, don't trust green execution" rule**: hand-
+verifying a total by re-deriving it *from the code's own logic* isn't independent verification —
+it just confirms the code is internally consistent, not that the logic is correct. Real
+independent verification means computing the expected answer from first principles (what should
+this number mean, given the domain) before looking at what the code produced, the way the user
+did here. This session's first "verified" pass didn't do that.
+
+**Side effect, resolved**: with net-inclusive totals, `Total Spend` can go negative in a month
+with large debt-payment credits, which flipped `Net Saved = income - spend` positive even when
+Income is ₹0 — mathematically correct but a confusing label. User asked for a different label;
+renamed to `Net Cash Flow` in both the report markdown and the Telegram summary (accurate
+regardless of sign, no math change).
+
+### WF4 fixed with the same bug, same session
+User asked to fix WF4 too, on the reasonable assumption that a sign-filter bug found in WF5's
+Code node would exist wherever the same filter pattern was copied. Confirmed: WF4's
+`Code: Aggregate & Flag` had the identical `parseFloat(t.amount_inr) > 0` filter. Removed it the
+same way — sum ALL of today's Transactions rows regardless of sign. `has_transactions` was left
+as "any row logged today" rather than "net spend nonzero" (a day with a full charge/reversal
+pair netting to ₹0 still counts as a day something was logged) — a deliberate minimal choice, not
+re-litigated with the user this session. Pushed via `update_workflow`, re-verified via
+`get_workflow`. **Not yet re-tested against a real day with a charge/reversal pair** — WF4's own
+daily cron will exercise it naturally, or it can be tested manually once a matching day exists in
+Transactions.
+
+### Final verification (2026-08-10) — real full-month data, all 4 cards
+User loaded all real July statements (ICICI, SBI, RBL, Scapia) into the Transactions sheet via
+WF1 (hit and resolved a Scapia password-rotation hiccup along the way — new password added to
+the `CARD_PASSWORDS` GitHub Actions secret) and ran WF5 for real. First read: `Spent: ₹46061`,
+user expected `-2309.39` and flagged it as wrong.
+
+Hand-summed all July rows across all 4 cards independently from the raw sheet data: **+46061.03**
+— exactly matching WF5's output. Confirmed no duplicate rows (user checked). Root cause of the
+user's `-2309.39` figure: a manual click-and-drag row selection in the Sheets UI — this
+Transactions sheet is **append-only by import batch per card, not sorted by date**, so each
+card's July rows sit in a different, non-contiguous row range (ICICI ~61-168, SBI ~169-192, RBL
+~193-228, Scapia ~230-280, each interleaved with that card's June rows). A manual selection
+silently grabbed one card's block and missed the others. Had the user run a formula-based sum
+(`SUMPRODUCT` keyed on `TEXT(date,"YYYY-MM")="2026-07"`) instead — returned `46061.03`, matching
+WF5 exactly. **No code bug — WF5 is correctly verified against real, full production data.**
+
+**Lesson for this project**: the Transactions sheet's append-by-batch layout (not sorted by
+date) makes manual eyeballing/selection in the Sheets UI genuinely unreliable for cross-checking
+totals — always use a formula (SUMIF/SUMPRODUCT keyed on the actual date column) instead, never
+a manual row selection, when independently verifying a report's numbers against the sheet.
+
+### Loose ends for next session
+- WF5's Debts/Goals/Net_Worth/Income sections are still unexercised with real non-empty data —
+  worth a deliberate test once the user populates those sheets, to confirm the Debt Avalanche and
+  Goals Progress sections render correctly with real rows (not just gracefully with empty ones).
+- WF4's sign-filter fix is unexercised against a real charge/reversal day — confirm correctness
+  next time one occurs, the same way WF5's fix was confirmed against July's real data.
+- WF6 (error handler) is next per the existing ordering — last workflow in the original Phase 2+
+  plan. WF2 (Telegram agent) still not started, deliberately last per the council's 2026-08-01
+  ordering.
+
+### Next session — resume here
+**Keyword: `WF6-build`**
+
+Say "WF6-build" (or paste this section) to a new session on this project and have it, in order:
+1. Read the `n8n-wf6-error-handler` skill for the workflow runbook.
+2. Apply this project's now-standard pre-build discipline: diff the runbook's field/column
+   references against `scripts/setup_sheets.py` (source of truth) before writing any node — WF4
+   and WF5 both had real schema mismatches caught this way.
+3. Build using `create_workflow` for the initial build, hand credential/project-move steps to the
+   user via the n8n UI, re-verify every change with `get_workflow` — never trust a "done" without
+   re-fetching.
+4. Watch for the same wiring bugs this project keeps hitting: a node with multiple incoming
+   connections fires on the FIRST predecessor, not all of them (use sequential chaining, not
+   parallel fan-in); a node downstream of a multi-item node re-executes once per item unless
+   `executeOnce: true`; an empty source sheet halts the workflow unless `alwaysOutputData: true`.
+5. Do a real test run, verify by independently recomputing the expected result from first
+   principles (not by re-deriving it from the code's own logic) before trusting any number.
+6. Update the status table and this file's session log the same way this session did.
+- Same `NIwD3iarrxwH36qj` (archived, not deleted) and general-access-sheet loose ends from
+  2026-08-02 remain untouched.
+- WF6 (error handler) is next per the existing ordering — last workflow in the original Phase 2+
+  plan. WF2 (Telegram agent) still not started, deliberately last per the council's 2026-08-01
+  ordering.

@@ -30,15 +30,41 @@
       ↓
 [Code: Determine Report Month]
       ↓
-[Sheets Read: Transactions] ──┐
-[Sheets Read: Income]         ├─→ [Code: Build Report]
-[Sheets Read: Debts]          │         ↓
-[Sheets Read: Goals]          │   [Drive: Upload Report.md]
-[Sheets Read: Net_Worth] ─────┘         ↓
-                                  [Telegram: Monthly Summary]
+[Sheets Read: Transactions]
+      ↓
+[Sheets Read: Income]
+      ↓
+[Sheets Read: Debts]
+      ↓
+[Sheets Read: Goals]
+      ↓
+[Sheets Read: Net_Worth]
+      ↓
+[Code: Build Report]
+      ↓
+[Drive: Upload Report.md]
+      ↓
+[Telegram: Monthly Summary]
 ```
 
-> All 5 Sheets reads can run in parallel — connect Cron Trigger to all 5 simultaneously, then merge into the Code node using a **Merge** node (mode: `Combine`, merge by position disabled — just pass all items).
+> **Correction (caught before build):** an earlier draft of this runbook fanned all 5 Sheets
+> Read nodes in parallel directly into `Code: Build Report`'s single input, with no Merge node,
+> reasoning that "nothing is chained after a multi-item node so there's no race." That reasoning
+> was wrong — in n8n, a node with **multiple incoming connections** fires as soon as the FIRST
+> predecessor completes, not after all of them, regardless of whether any single predecessor
+> emits multiple items. That is the exact bug WF4 hit (`Sheets Read: Budget hasn't been
+> executed`), and a 5-way parallel fan-in reproduces it, not avoids it.
+>
+> The proven fix (WF4's actual resolution) is **sequential chaining, not a Merge node**: each
+> Sheets Read node feeds directly into the next, and `Code: Build Report` sits at the end of the
+> chain referencing every prior read via `$('Sheets Read: ...')`. Because a chained node
+> re-executes once per incoming item by default (WF4's second bug — the "5x-inflation" case),
+> set `executeOnce: true` on **every** Sheets Read node in the chain except the first
+> (`Transactions`, whose only parent — `Code: Determine Report Month` — always emits exactly one
+> item, so no multiplication risk exists there) — and on `Code: Build Report` itself, since its
+> immediate parent (`Sheets Read: Net_Worth`) can emit more than one row. Also set
+> `alwaysOutputData: true` on all 5 Sheets Read nodes so an empty Debts/Goals/Net_Worth sheet
+> doesn't silently halt the whole chain (same class of bug WF4 hit with an empty Budget sheet).
 
 ---
 
@@ -68,12 +94,27 @@ return [{ json: { reportMonth, reportLabel } }];
 | Node | Sheet | Filter in Code |
 |---|---|---|
 | Sheets Read: Transactions | `Transactions` | `date.startsWith(reportMonth)` |
-| Sheets Read: Income | `Income` | `month === reportMonth` |
+| Sheets Read: Income | `Income` | `date.startsWith(reportMonth)` (Income has no `month` column — only `date`) |
 | Sheets Read: Debts | `Debts` | All rows (current state) |
 | Sheets Read: Goals | `Goals` | All rows (current state) |
-| Sheets Read: Net_Worth | `Net_Worth` | Last 2 rows (this month + prev) |
+| Sheets Read: Net_Worth | `Net_Worth` | Last 2 rows by `month` (this month + prev) — Net_Worth has no `date` column, only `month` |
 
-All use `getAll` operation.
+All use `getAll` operation, chained **sequentially** (Transactions → Income → Debts → Goals →
+Net_Worth), per the corrected topology above. `alwaysOutputData: true` on all 5.
+`executeOnce: true` on Income, Debts, Goals, and Net_Worth (not Transactions — see correction
+note above). `Code: Build Report` also needs `executeOnce: true` since it's chained directly
+after Net_Worth.
+
+**Actual column names, verified against `scripts/setup_sheets.py` (source of truth) — the Code
+node below must use these exactly, not the plausible-looking names an earlier draft used:**
+
+| Sheet | Actual columns used by Node 8 |
+|---|---|
+| Income | `date`, `amount_inr` (no `month` field) |
+| Debts | `debt_name`, `total_outstanding`, `initial_amount`, `interest_rate` (no `account_name`, `balance_inr`, `original_inr`) |
+| Goals | `goal_name`, `saved_so_far`, `target_inr` (no `saved_inr`) |
+| Net_Worth | `month`, `net_worth` (no `date`, no `net_worth_inr`) |
+| Transactions | `date`, `amount_inr`, `budget_type`, `merchant` — unchanged, already correct |
 
 ---
 
@@ -84,9 +125,15 @@ const reportMonth = $('Code: Determine Report Month').first().json.reportMonth;
 const reportLabel = $('Code: Determine Report Month').first().json.reportLabel;
 
 // --- Transactions ---
+// Do NOT filter to amount_inr > 0 — real statements contain charge/reversal/remainder
+// triplets (a purchase immediately reversed, then re-charged as the true net amount, same
+// pattern documented in CLAUDE.md for Kotak/ICICI EMI conversions). Filtering out negatives
+// double-counts every reversed charge as real spend instead of netting it out. Verified
+// against a real July 2026 dataset: summing ALL amount_inr (no sign filter) gives -32564.71,
+// matching independent hand-verification; the amount_inr > 0 filter gave a wrong +66516.
 const txns = $('Sheets Read: Transactions').all()
   .map(i => i.json)
-  .filter(t => t.date && t.date.startsWith(reportMonth) && parseFloat(t.amount_inr) > 0);
+  .filter(t => t.date && t.date.startsWith(reportMonth));
 
 const totalSpend = txns.reduce((s, t) => s + parseFloat(t.amount_inr), 0);
 
@@ -105,28 +152,32 @@ const top5 = Object.entries(merchantTotals)
   .sort((a, b) => b[1] - a[1])
   .slice(0, 5);
 
-// --- Income ---
+// --- Income --- (Income sheet has no `month` column, only `date`)
 const incomeRows = $('Sheets Read: Income').all().map(i => i.json)
-  .filter(r => r.month === reportMonth);
+  .filter(r => r.date && r.date.startsWith(reportMonth));
 const totalIncome = incomeRows.reduce((s, r) => s + parseFloat(r.amount_inr || 0), 0);
 const saved = totalIncome - totalSpend;
 
-// --- Debts ---
-const debts = $('Sheets Read: Debts').all().map(i => i.json);
+// --- Debts --- (actual columns: debt_name, total_outstanding, initial_amount)
+// Filter out blank rows (a sheet with no real data can still return a truthy {} row from
+// getAll, which broke % paid off with NaN — verified against a real test run 2026-08-09)
+const debts = $('Sheets Read: Debts').all().map(i => i.json).filter(d => d.debt_name);
 const priorityDebt = debts.sort((a, b) => parseFloat(b.interest_rate) - parseFloat(a.interest_rate))[0];
 const debtPaid = byType['debt'] || 0;
 
-// --- Net Worth ---
+// --- Net Worth --- (actual columns: month, net_worth — no `date`, no `net_worth_inr`)
 const nwRows = $('Sheets Read: Net_Worth').all().map(i => i.json)
-  .sort((a, b) => b.date > a.date ? 1 : -1);
-const netWorthNow = parseFloat(nwRows[0]?.net_worth_inr || 0);
-const netWorthPrev = parseFloat(nwRows[1]?.net_worth_inr || 0);
+  .sort((a, b) => b.month > a.month ? 1 : -1);
+const netWorthNow = parseFloat(nwRows[0]?.net_worth || 0);
+const netWorthPrev = parseFloat(nwRows[1]?.net_worth || 0);
 const nwDelta = netWorthNow - netWorthPrev;
 
-// --- Goals ---
-const goals = $('Sheets Read: Goals').all().map(i => i.json).map(g => ({
+// --- Goals --- (actual column: saved_so_far, not saved_inr)
+// Same blank-row guard as Debts — filter before mapping so an empty sheet doesn't produce
+// an "undefined: NaN%" line (verified against a real test run 2026-08-09).
+const goals = $('Sheets Read: Goals').all().map(i => i.json).filter(g => g.goal_name).map(g => ({
   name: g.goal_name,
-  pct: Math.round((parseFloat(g.saved_inr) / parseFloat(g.target_inr)) * 100)
+  pct: Math.round((parseFloat(g.saved_so_far) / parseFloat(g.target_inr)) * 100)
 }));
 
 // --- Build markdown report ---
@@ -140,7 +191,7 @@ const report = `# krimRakOra — ${reportLabel} Report
 ## Summary
 - Income: ₹${totalIncome.toFixed(0)}
 - Total Spend: ₹${totalSpend.toFixed(0)}
-- Net Saved: ₹${saved.toFixed(0)}
+- Net Cash Flow: ₹${saved.toFixed(0)}
 
 ## Spend by Budget Type
 ${typeBreakdown}
@@ -149,10 +200,10 @@ ${typeBreakdown}
 ${top5Lines}
 
 ## Debt Avalanche
-- Priority card: ${priorityDebt?.account_name || 'N/A'} @ ${priorityDebt?.interest_rate || 'N/A'}%
+- Priority card: ${priorityDebt?.debt_name || 'N/A'} @ ${priorityDebt?.interest_rate || 'N/A'}%
 - This month's payment: ₹${debtPaid.toFixed(0)}
-- Balance remaining: ₹${parseFloat(priorityDebt?.balance_inr || 0).toFixed(0)}
-- % paid off: ${priorityDebt ? Math.round((1 - priorityDebt.balance_inr / priorityDebt.original_inr) * 100) : 0}%
+- Balance remaining: ₹${parseFloat(priorityDebt?.total_outstanding || 0).toFixed(0)}
+- % paid off: ${priorityDebt ? Math.round((1 - priorityDebt.total_outstanding / priorityDebt.initial_amount) * 100) : 0}%
 
 ## Net Worth
 - This month: ₹${netWorthNow.toFixed(0)}
@@ -163,8 +214,8 @@ ${goalLines}
 `;
 
 const telegramSummary = `📅 ${reportLabel} Report
-Income: ₹${totalIncome.toFixed(0)} | Spent: ₹${totalSpend.toFixed(0)} | Saved: ₹${saved.toFixed(0)}
-Debt paid: ₹${debtPaid.toFixed(0)} | Priority: ${priorityDebt?.account_name || 'N/A'} @ ${priorityDebt?.interest_rate || 'N/A'}%
+Income: ₹${totalIncome.toFixed(0)} | Spent: ₹${totalSpend.toFixed(0)} | Net cash flow: ₹${saved.toFixed(0)}
+Debt paid: ₹${debtPaid.toFixed(0)} | Priority: ${priorityDebt?.debt_name || 'N/A'} @ ${priorityDebt?.interest_rate || 'N/A'}%
 Net worth: ₹${netWorthNow.toFixed(0)} (${nwDelta >= 0 ? '+' : ''}₹${nwDelta.toFixed(0)} MoM)`;
 
 return [{
