@@ -19,6 +19,7 @@
 | Phase 5 — Hardening | ✅ Done, red-teamed 2026-08-10 | 93/93 tests pass; test_sheets flake fixed (see below); categorizer.py hardened against prompt injection + gray-area confidence calibration; WF1 Telegram messages now surface real parse results. Open: GitHub repo is public (top risk, unfixed — user's call), Transactions sheet still link-editable. See `## Session: 2026-08-10 (cont.) — Red team review` |
 | Phase 6 — n8n WF2 | ✅ Built & verified end-to-end 2026-08-10 | Telegram AI Agent, id `ZwoPsgjdauO1atzi`, active, registered WF6 as Error Workflow. ADD_EXPENSE, QUERY_BUDGET (this-month and named-month), and UNKNOWN all verified against real Telegram messages + independent sheet re-reads. **All 6 planned n8n workflows (WF1–WF6) are now built, verified, and active — Phase 2+ is complete.** See `## Session: 2026-08-10 (cont.) — WF2 built & verified` |
 | Phase 7 — Review flow + Income parsing | ✅ Built & verified 2026-08-10 | Low-confidence categorizations now persist a `[review: confidence NN%]` tag in `notes` and are fixable via `scripts/review_transactions.py` (new rows only, not retroactive). `income_parser.py` extracts salary NEFT credits from Kotak savings-account statements into `Income`, routed ahead of card detection in `finance.py parse --pdf` — fixes a real false-success bug where a savings statement silently produced "0 rows written" (misdetected as the Kotak credit card). Verified against 4 real months, live-written for July. `Debts`/`Goals`/`Net_Worth`/`Vendor_Map` still unused. See `## Session: 2026-08-10 (cont.) — review-correction flow + Income parsing` |
+| Phase 8 — Kotak savings full ledger | ✅ Built & verified 2026-08-10 | `savings_ledger.py` classifies every line of a Kotak savings statement (not just salary) into salary/SIP/CRED Club/family-transfer/personal-spend/loan buckets, derives each row's signed amount from consecutive printed-balance deltas (handles pdftotext losing the Dr/Cr column split), and writes SIPs (deterministic `Investment/SIP/save`), CRED Club + family transfers (`[review: ...]` tagged, ambiguous purpose), and personal spend (through the real Claude categorizer) into `Transactions` under `card_account = "Kotak Savings"`. Gold-loan-linked lines ("Ins Debit"/"Pyt Loan", GLN-tagged) are deliberately reported only, never written — real loan terms need the user, not one month's cash flow. Live-verified for July: 48 rows written, 42 flagged for review, independently re-summed to ₹135,966.76. `Debts` still has zero real rows — the found gold loan is the next real candidate once the user supplies its terms. See `## Session: 2026-08-10 (cont.) — Kotak savings full ledger` |
 
 ### Axis and Emirates NBD — dropped from scope
 Axis: the only files under `dump/axis/` are savings-account statements (zero transactions,
@@ -81,9 +82,11 @@ Do NOT recreate `venv/` inside the project folder — it will reintroduce the sl
 ---
 
 ## Google Sheets (9 tabs) — all created ✅
-`Income` (has real data as of 2026-08-10, see `income_parser.py`) · `Transactions` · `Debts`
-(unused) · `Budget` · `Goals` (unused) · `Net_Worth` (unused) · `FX_Rates` · `Categories` (57 rows
-seeded) · `Vendor_Map` (unused)
+`Income` (has real data as of 2026-08-10, see `income_parser.py`) · `Transactions` (now includes
+`card_account = "Kotak Savings"` rows via `savings_ledger.py`, not just the 5 credit cards) ·
+`Debts` (unused — a real gold loan was found in the Kotak savings statement 2026-08-10, needs the
+user's actual loan terms to enter) · `Budget` · `Goals` (unused) · `Net_Worth` (unused) ·
+`FX_Rates` · `Categories` (57 rows seeded) · `Vendor_Map` (unused)
 
 ---
 
@@ -126,6 +129,7 @@ date | card_account | merchant | amount | currency | exchange_rate | amount_inr
 | `scripts/sync_fx.py` | Fetch + write today's FX rates |
 | `scripts/review_transactions.py` | Interactive CLI to fix low-confidence categorizations flagged `[review: confidence NN%]` in `notes` |
 | `income_parser.py` | Detects a Kotak savings-account statement (`is_kotak_savings_statement()`), extracts salary NEFT credits (`extract_kotak_savings_income()`) into `Income`. Routed ahead of card detection in `finance.py parse --pdf` |
+| `savings_ledger.py` | Full Kotak savings-statement ledger: `classify_savings_transactions()` buckets every line (salary/sip/cred_club/family/spend/loan) with signed amounts from balance deltas; `extract_merchant()` pulls a name out of a `UPI/...` description. Feeds `finance.py`'s `_parse_kotak_savings_full()` |
 
 ---
 
@@ -185,7 +189,7 @@ pypdf>=4.0, cryptography>=41.0
 
 ## Test suite
 ```bash
-python -m pytest tests/ -q   # 98 tests total, all passing (as of 2026-08-10)
+python -m pytest tests/ -q   # 106 tests total, all passing (as of 2026-08-10)
 ```
 **test_sheets flake — fixed 2026-07-08.** `tests/test_fx.py` did `sys.modules['sheets'] =
 MagicMock()` at import time to stub `sheets.read_all` before importing `fx`, but never
@@ -214,6 +218,7 @@ imported) before swapping in the mock, and restores it (or deletes the key) righ
 - `tests/test_kotak_pdf_to_md.py` — 7 tests ✅ (kotak extractor)
 - `tests/test_categorizer.py` — 6 tests ✅ (prompt-injection filter, added 2026-08-10)
 - `tests/test_income_parser.py` — 5 tests ✅ (Kotak savings-statement income extraction, real July fixture, added 2026-08-10)
+- `tests/test_savings_ledger.py` — 8 tests ✅ (full Kotak savings-statement ledger classification, real July fixture — all 53 real transactions, contiguous, added 2026-08-10)
 - axis/emirates-nbd — dropped from scope, no tests planned
 
 ---
@@ -1466,6 +1471,95 @@ overlap, but worth knowing if a 6th card is ever added.
 - `NIwD3iarrxwH36qj` (archived, not deleted) loose end from 2026-08-02 remains untouched.
 
 ### Next session — resume here
+> **Superseded 2026-08-10** — see `## Session: 2026-08-10 (cont.) — Kotak savings full ledger`
+> below for what actually happened. Left below, per this project's own "mention, don't delete"
+> Surgical Changes rule.
+
 Say **"security-hardening"** for the still-open repo/Sheet-access items, or bring a real
 statement/data for `Debts`/`Goals`/`Net_Worth`/`Vendor_Map` to start populating those sheets for
 real.
+
+---
+
+## Session: 2026-08-10 (cont.) — Kotak savings full ledger
+
+User re-uploaded the same July Kotak savings statement to the WF1-watched Drive folder, asking to
+"check it" — turned out to be a duplicate of the file already processed for Income earlier this
+session (confirmed by downloading and decrypting it: identical content, `Account Statement 01 Jul
+2026 - 31 Jul 2026`, same account `407010101437`). Not a new debt statement as first assumed from
+the user's "bring a statement for Debts" framing.
+
+### Scope changed mid-session: user wants the full ledger, not just salary
+User clarified: all 4 credit cards are already in Transactions; what's actually missing is the
+**savings account's own income and spend**, not just the salary credit already extracted. This
+supersedes the 2026-08-10 (earlier) session's deliberate "income only, not a full ledger" scope
+call — the user re-scoped it themselves this time, with real detail on how to classify the
+ambiguous parts:
+- **CRED Club** lines are usually credit card bill payments but not always ("shopping or parking
+  or something else too") — don't auto-exclude, write as unknown/flagged for later manual
+  categorization.
+- **K Radha Gouri** transfers (she's the account's registered nominee) go both directions —
+  sometimes she reimburses the user for a card payment, sometimes it's something else — also
+  flagged, not guessed.
+- The large **"Ins Debit"/"Pyt Loan" GLN-tagged** lines (~₹4.4L) are a **gold loan** — confirmed
+  by the user, not something to guess a `Debts` row from off one month's cash flow.
+- Personal UPI payments to individuals (Jai Medicals, Chai Kings, etc.) are real spend and should
+  run through the normal categorizer, same as card spend.
+
+### Built `savings_ledger.py`
+`_parse_all_lines()` parses every transaction row (not just salary-matching ones) and derives each
+row's **signed** amount from the delta between consecutive printed running balances — the
+underlying PDF has separate Withdrawal(Dr.)/Deposit(Cr.) columns that `pdftotext` flattens into a
+single number with no debit/credit marker, so direction can't be read off the line itself.
+`classify_savings_transactions()` buckets every row into salary/sip/cred_club/family/spend/loan by
+description keyword, in priority order (checked salary/sip/cred_club/family before the generic
+`UPI/` fallback, so those don't get miscategorized as plain spend).
+
+**Real bug caught while writing the test, not while building the feature**: the first test fixture
+hand-trimmed the statement down to a handful of representative transactions (skipping ranges like
+4-6, 8, 10-21) to keep the test file short. This silently broke the balance-delta math — the
+delta between two non-adjacent real transactions includes every skipped transaction's effect too,
+so multiple assertions failed with values that were real historical balances but wrong for the
+individual (spliced) rows being tested. This is exactly the class of fixture bug this project's
+own convention (verbatim excerpts, not hand-cleaned) exists to catch — caught it here, not in
+production, because the assertions were checked against independently-known real values rather
+than accepted on faith. Fixed by using the full, unmodified 53-transaction statement as the test
+fixture instead of a hand-picked subset — `tests/test_savings_ledger.py`, 8 tests, all passing,
+including a full-statement reconciliation check (`sum of all deltas == closing balance - opening
+balance`).
+
+### Wired into `finance.py`
+`_parse_kotak_savings_full()` replaces the earlier income-only branch: still writes salary to
+Income first (`_parse_kotak_savings_income`, unchanged), then writes SIP debits
+(`Investment/SIP/save`, deterministic), CRED Club and family-transfer rows (`Unknown` category,
+`[review: ...]`-tagged in `notes`, reusing the review-flow mechanism built earlier this session),
+and personal UPI spend (run through the real `categorize_transactions()`, same Claude pipeline
+every card parser uses) — all under `card_account = "Kotak Savings"` in `Transactions`, with the
+same `(date, merchant, amount_inr)` dedup as every other parser. Loan-linked lines are printed to
+the console/Telegram output only, never written to any sheet.
+
+### Clean verification
+Dry-run against the real July statement showed 48 new rows (0 income — already written earlier
+this session, correctly deduped) and 4 loan lines reported separately; user approved a real write.
+Independently re-read `Transactions` afterward: exactly 48 rows with `card_account = "Kotak
+Savings"`, summing to ₹135,966.76, 42 of them carrying a `[review: ...]` tag — matched the CLI
+output exactly.
+
+### Loose ends for next session
+- The gold loan found in this statement (GLN 4228809 / 4805528, ~₹4.4L) is not yet in `Debts` —
+  needs the user's real loan terms (principal, interest rate, current outstanding, EMI/due date)
+  before it can be entered; a single month's disbursement/insurance-debit pair isn't enough to
+  reconstruct that safely.
+- 42 rows in this July batch are `[review: ...]`-tagged (8 CRED Club, 6 Radha Gouri, ~28
+  low-confidence personal spend) — run `scripts/review_transactions.py` to work through them.
+- This pipeline only covers Kotak's savings account; if the user has other bank accounts, they'd
+  need the same statement → `is_<bank>_savings_statement()` → `savings_ledger`-style treatment
+  built fresh, verified against a real statement the same way this one was.
+- `Goals`/`Net_Worth`/`Vendor_Map` are still unused — unchanged from the earlier session's note.
+- Same security-hardening loose ends from 2026-08-10 (repo visibility, Sheet access) remain open.
+- `NIwD3iarrxwH36qj` (archived, not deleted) loose end from 2026-08-02 remains untouched.
+
+### Next session — resume here
+Bring the gold loan's real terms (principal, rate, outstanding, EMI/due date) to populate `Debts`
+for real, work through the 42 flagged review rows via `scripts/review_transactions.py`, or say
+**"security-hardening"** for the still-open repo/Sheet-access items.
