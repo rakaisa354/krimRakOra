@@ -17,6 +17,7 @@
 | Phase 3 — n8n WF3+WF4+WF5+WF6 | ✅ All 4 done 2026-08-10 | WF3 (daily FX sync) built, verified, active — id `ArQY0BWqFYQLTRVA`. WF4 (daily spend summary) built, verified, active — id `LpmXgr7n8UQNjJ5T`. WF5 (monthly report) built, verified, active — id `BxYQfsOgCooNMeri`, see `## Session: 2026-08-09 — WF5 built & verified`. WF6 (error handler) built, verified, active — id `YeWq5wH7cTboCQrL`, registered as Error Workflow on WF1/WF3/WF4/WF5, see `## Session: 2026-08-10 — WF6 built & verified, Kotak parse bug fixed` |
 | Phase 4 — Debt + Net Worth | ✅ Done | `debt_planner.py`, `net_worth.py`, `report.py` written + wired |
 | Phase 5 — Hardening | ✅ Done, red-teamed 2026-08-10 | 93/93 tests pass; test_sheets flake fixed (see below); categorizer.py hardened against prompt injection + gray-area confidence calibration; WF1 Telegram messages now surface real parse results. Open: GitHub repo is public (top risk, unfixed — user's call), Transactions sheet still link-editable. See `## Session: 2026-08-10 (cont.) — Red team review` |
+| Phase 6 — n8n WF2 | ✅ Built & verified end-to-end 2026-08-10 | Telegram AI Agent, id `ZwoPsgjdauO1atzi`, active, registered WF6 as Error Workflow. ADD_EXPENSE, QUERY_BUDGET (this-month and named-month), and UNKNOWN all verified against real Telegram messages + independent sheet re-reads. **All 6 planned n8n workflows (WF1–WF6) are now built, verified, and active — Phase 2+ is complete.** See `## Session: 2026-08-10 (cont.) — WF2 built & verified` |
 
 ### Axis and Emirates NBD — dropped from scope
 Axis: the only files under `dump/axis/` are savings-account statements (zero transactions,
@@ -146,7 +147,7 @@ python3 scripts/quick_add.py --merchant "Zomato" --amount 350
 
 ## n8n Workflows (Phase 2+)
 - **WF1** Drive → GH Actions `parse-statement` → `finance.py parse` → Sheets
-- **WF2** Telegram AI Agent (Claude haiku, memory, quick-add, queries)
+- **WF2** Telegram AI Agent (Claude haiku, quick-add, budget queries) — ✅ built & verified 2026-08-10, id `ZwoPsgjdauO1atzi`, active, in KRIMRAK project
 - **WF3** Daily FX sync 6am IST (cron `30 0 * * *`) — ✅ built & verified 2026-08-02, id `ArQY0BWqFYQLTRVA`, active, in KRIMRAK project
 - **WF4** Daily spend summary 9pm IST (cron `30 15 * * *`) — ✅ built & verified 2026-08-09, id `LpmXgr7n8UQNjJ5T`, active, in KRIMRAK project
 - **WF5** Monthly report 1st of month 8am IST (cron `30 2 1 * *`)
@@ -1268,6 +1269,96 @@ with a plain-language next-action bullet.
 - Same `NIwD3iarrxwH36qj` (archived, not deleted) loose end from 2026-08-02 remains untouched.
 
 ### Next session — resume here
+> **Superseded 2026-08-10** — WF2-build is done, see
+> `## Session: 2026-08-10 (cont.) — WF2 built & verified` below for what actually happened. Left
+> below, per this project's own "mention, don't delete" Surgical Changes rule.
+
 Say **"WF2-build"** to pick up the last remaining planned workflow (see the 2026-08-10 WF6 session
 above for the full handoff checklist), or **"security-hardening"** to work through the loose ends
 above (repo visibility + Sheet access are the two real open risks from this review).
+
+---
+
+## Session: 2026-08-10 (cont.) — WF2 built & verified
+
+Ran the `WF2-build` checklist. This is the last of the 6 planned n8n workflows — Phase 2+ is now
+complete.
+
+### Found and reused an abandoned June 2026 stub instead of creating a third duplicate
+`ZwoPsgjdauO1atzi` ("WF2 — Telegram AI Agent") already existed, created 2026-06-01 — before
+`finance.py`'s parsers/CLI even existed. It had empty HTTP bodies, an unconfigured Switch, zero
+executions, and credentials borrowed from an unrelated project. Rebuilt in place via
+`update_workflow` (the workflow already existed, so — consistent with WF5's finding — `update_workflow`
+worked fine here; only *creating new* workflows from scratch needs `create_workflow`). This avoids
+a third duplicate-name workflow, the exact confusion `NIwD3iarrxwH36qj` caused for WF1.
+
+### Added a security gate not in the original skill runbook
+A "Guard: Authorized User Only" IF node drops any Telegram message not from the owner's chat id
+(832207392) before it reaches Claude or GitHub — this bot is publicly discoverable on Telegram
+once named; without this gate, anyone who found it could trigger real GitHub Actions runs and
+spend Claude API credits. Silent drop (no reply), so the bot doesn't reveal its existence to
+strangers. Full Telegram `secret_token` header validation (per the 2026-08-10 red-team review's
+loose end) turned out not to be directly wireable — n8n's native Telegram Trigger node doesn't
+expose incoming headers the way a raw Webhook node does — so the chat-id allowlist serves as the
+practical equivalent for a single-owner bot.
+
+### Real bug 1 — quick-add path had no schema mismatch, but query-budget did
+Diffed the skill runbook against the real GitHub Actions workflows (`quick-add.yml`,
+`query-budget.yml`, both already existed) and `scripts/quick_add.py`/`scripts/query_budget.py`
+before building, per this project's standard discipline. `quick_add.py` matched cleanly. But
+`query_budget.py` had the exact same sign-filter bug already found and fixed in WF4/WF5's Code
+nodes on 2026-08-09 (`amount_inr > 0`, excluding credits/reversals) — fixed the same way, by
+summing all signed amounts. No dedicated test file existed for this script.
+
+### Real bug 2 — the fix was edited but never pushed, caught by live testing
+First real QUERY_BUDGET test ("how much did I spend this month?") replied with a total that,
+independently re-summed against the raw sheet, didn't match — a real -₹45,000 BBPS bill-payment
+credit was missing from the total. Root cause: the `query_budget.py` sign-filter fix above had
+only been applied locally via `Edit` — never `git commit`/`git push` — so GitHub Actions was still
+running the old, buggy code from `origin/main`. **Lesson, sharper than the existing "hand-verify
+against real data" rule**: an `Edit` tool call changes the local file, not what's deployed; for
+any file GitHub Actions executes, the fix isn't real until it's committed *and* pushed — verify
+with `git log -1 -- <file>` after, not just that the local diff looks right. Committed as
+`539f81e` and pushed. Also added a reconciling "Other/Uncategorized" line to the summary output,
+since the categorizer's literal `budget_type: "Unknown"` (capital-U, case-sensitive) would
+otherwise vanish from the visible breakdown while still counting toward the total — same class of
+silent-gap issue as WF4's missing Budget row for `petty`.
+
+### Real bug 3 — Claude had no ground truth for "today"
+"how much did I spend in July?" replied "No transactions found for 2024-07" — two years off. Root
+cause: the classification prompt never told Claude the actual current date, so it resolved
+relative month references against its own internal assumption rather than this project's real
+2026-08-10. Fixed by injecting `{{ $now.toISODate() }}` into the prompt as explicit ground truth.
+Also (found in an earlier test) Claude returned `{"month": "current"}` for "this month" instead of
+leaving it blank — fixed both in the prompt wording and, more robustly, with a defensive
+`/^\d{4}-\d{2}$/` format guard on the GitHub: Query Budget node's `jsonBody`, so a future wording
+drift in Claude's output can't silently break the query again.
+
+### Clean verification, each step independently re-checked
+1. "500 zomato dinner" → real row confirmed via a direct `read_all("Transactions")` re-read, not
+   just the green n8n execution or the GitHub Actions log line.
+2. "how much did I spend this month?" → after the push, total correctly showed -₹38,547 for
+   2026-08, hand-verified against a direct sum of the real August rows (which matched exactly).
+3. "how much did I spend in July?" → resolved to 2026-07 correctly after the date fix; total
+   ₹57,579 across 257 rows, independently re-summed from the raw sheet and matched exactly
+   (₹57,578.77).
+4. "asdfgh" → UNKNOWN fallback replied correctly, confirmed via a real n8n execution.
+5. Unauthorized chat id → not tested (hard to test solo); the Guard node's logic was verified by
+   inspection (`get_workflow` re-fetch) but not exercised against a real message from a different
+   Telegram account.
+
+### Loose ends for next session
+- The Guard node's chat-id gate is unexercised against a real unauthorized message — worth testing
+  from a second Telegram account at some point, not blocking since the logic itself is simple and
+  was verified by inspection.
+- Same top-priority loose ends from the 2026-08-10 red-team review remain untouched: GitHub repo
+  is still public, Transactions sheet is still "Anyone with the link — Editor".
+- `NIwD3iarrxwH36qj` (archived, not deleted) loose end from 2026-08-02 remains untouched.
+- **All 6 planned n8n workflows (WF1, WF2, WF3, WF4, WF5, WF6) are now built, verified, and
+  active. Phase 2+ (the original n8n automation plan) is complete.** Future work is maintenance,
+  the security-hardening loose ends above, or genuinely new scope the user decides to add.
+
+### Next session — resume here
+Say **"security-hardening"** to work through the two remaining open risks (repo visibility + Sheet
+access) from the 2026-08-10 red-team review — the last unaddressed items from that session. There
+is no next planned workflow; new work from here is either hardening or new scope.
