@@ -16,7 +16,7 @@
 | Phase 2 — n8n WF1 | ✅ Verified end-to-end 2026-08-02 | Real statement PDF → Drive → n8n → GitHub Actions → decrypt/parse → 60 real rows written to Transactions sheet → truthful "✅ parsed" Telegram message. Live workflow id is `yO2jvG2di7fSeAz0` (NOT `NIwD3iarrxwH36qj` — see `## Session: 2026-08-02`). WF2 (Telegram agent) still not started. |
 | Phase 3 — n8n WF3+WF4+WF5+WF6 | ✅ All 4 done 2026-08-10 | WF3 (daily FX sync) built, verified, active — id `ArQY0BWqFYQLTRVA`. WF4 (daily spend summary) built, verified, active — id `LpmXgr7n8UQNjJ5T`. WF5 (monthly report) built, verified, active — id `BxYQfsOgCooNMeri`, see `## Session: 2026-08-09 — WF5 built & verified`. WF6 (error handler) built, verified, active — id `YeWq5wH7cTboCQrL`, registered as Error Workflow on WF1/WF3/WF4/WF5, see `## Session: 2026-08-10 — WF6 built & verified, Kotak parse bug fixed` |
 | Phase 4 — Debt + Net Worth | ✅ Done | `debt_planner.py`, `net_worth.py`, `report.py` written + wired |
-| Phase 5 — Hardening | ✅ Done | 87/87 tests pass; test_sheets flake fixed (see below) |
+| Phase 5 — Hardening | ✅ Done, red-teamed 2026-08-10 | 93/93 tests pass; test_sheets flake fixed (see below); categorizer.py hardened against prompt injection + gray-area confidence calibration; WF1 Telegram messages now surface real parse results. Open: GitHub repo is public (top risk, unfixed — user's call), Transactions sheet still link-editable. See `## Session: 2026-08-10 (cont.) — Red team review` |
 
 ### Axis and Emirates NBD — dropped from scope
 Axis: the only files under `dump/axis/` are savings-account statements (zero transactions,
@@ -1182,3 +1182,92 @@ Say "WF2-build" (or paste this section) to a new session on this project and hav
    manual "Execute workflow" button — confirmed 2026-08-10 that manual test runs never reach the
    Error Workflow, so they're not a valid substitute for a real end-to-end test here either.
 6. Update the status table and this file's session log the same way this session did.
+
+---
+
+## Session: 2026-08-10 (cont.) — Red team review: security, UX, insight depth
+
+User deleted the stray `46061.03` value from Transactions row 273 (flagged end of prior session).
+Ran a three-pass, self-adversarial review of the built system — security, then UX/edge cases
+building on that, then categorization/insight depth building on both — grounded against the live
+repo, GitHub Actions workflow, and n8n instance rather than a generic checklist. Full writeup
+published as an artifact (title `krimrakora-redteam-review`, favicon 🔎) — this section is the
+condensed record for future sessions.
+
+### Iteration 1 — Security: real finding, not a generic list
+Verified via `gh repo view`: **`rakaisa354/krimRakOra` is a public GitHub repository.** `CLAUDE.md`
+itself — committed and versioned in it — documents the n8n Cloud hostname
+(`veloxglobal.app.n8n.cloud`), every workflow ID, the service account email, Drive folder IDs,
+credential display names, and the Telegram chat ID. None of that is a secret on its own (confirmed
+`credentials.json`/`.env` were never committed, via `git log -- credentials.json .env`), but
+together it's a working recon map of the automation surface. **Not fixed this session** — repo
+visibility is the user's call, flagged as the top open item below.
+
+Also found and fixed: `categorizer.py` interpolated raw, attacker-influenceable merchant text
+(lifted straight from bank statement PDFs) directly into the Claude categorization prompt with no
+sanitization — a crafted merchant name could have attempted prompt injection. Fixed with a
+regex marker filter (`_sanitize_merchant` in `categorizer.py`) that routes suspicious merchant
+strings to manual review instead of the API call, plus an explicit `<merchants>` untrusted-data
+wrapper in the prompt itself. 6 new tests in `tests/test_categorizer.py` lock in the filter
+behavior. Also re-flagged (not re-fixed, still open from 2026-08-02): the Transactions sheet's
+general access was "Anyone with the link — Editor."
+
+### Iteration 2 — UX: a real, fixable gap in what Telegram actually says
+Read `.github/workflows/parse-statement.yml` directly and found the success/failure Telegram
+messages were both generic regardless of outcome — `"✅ Statement parsed and written to Sheets."`
+fires identically whether 60 real rows landed or a run silently wrote 0 new rows because
+everything was a duplicate, and the failure message was a bare run-link with no reason.
+`finance.py` already prints exactly the right summary (`"✓ N rows written, M duplicates
+skipped"` / `"✗ ..."` on error) — it just never reached the user.
+
+**Fixed**: both Telegram notify steps now capture the parse command's stdout/stderr via `tee
+parse_output.log`, extract the real `✓`/`⚠`/`✗` line, and include it in the message via
+`--data-urlencode` (switched from raw `-d text=` for safe multi-line handling). Critically,
+preserved exit-code propagation through the new `tee` using `exit ${PIPESTATUS[0]}` on every
+affected step — a `cmd | tee file` pipe silently returns `tee`'s exit code, not `cmd`'s, which
+would have been exactly the class of false-success bug already fixed once, the hard way, in the
+2026-08-01 session. Verified: YAML re-parses clean (`yaml.safe_load`), full test suite still
+93/93 (87 + 6 new categorizer tests). Not yet tested against a real WF1 run — the fix is code-
+verified, not live-verified; do that on the next real statement drop.
+
+Also flagged, not built: no heartbeat if a GitHub Actions run never even starts after n8n's
+dispatch (a gap neither WF1 nor WF6 can see, since it happens between two systems); Telegram
+formatting is fragile-by-omission if `parse_mode` is ever turned on without an escaping helper
+for merchant names.
+
+### Iteration 3 — Insight depth: categorizer improved, report.py changes scoped not built
+Read `report.py` directly: confirmed it's a strict single-month snapshot — the `Net_Worth` sheet
+already has an unused `mom_change` column, i.e. the schema anticipated trend analysis that the
+report logic never actually built. Also confirmed the pre-session categorizer prompt gave the
+model zero guidance on gray-area spend (subscriptions, ambiguous merchant names) and no
+instruction to calibrate confidence down for genuine ambiguity — every result looked equally
+certain regardless of how uncertain the underlying merchant name actually was.
+
+**Fixed**: `categorizer.py`'s prompt now states an explicit gray-area rule (recurring
+subscriptions default to 'want' unless clearly a necessity) and instructs the model to prefer a
+genuinely lower confidence score over guessing when ambiguous. **Scoped but not built** (flagged
+for a future session rather than bundled into this one, per Surgical Changes): a month-over-month
+delta section for `report.py` (reuses the existing `_month_filter` helper against the prior
+month), and a deterministic Python heuristic — not a second LLM call, keeping the zero-recurring-
+cost design intact — flagging any `budget_type` over 100% of allocation for 2+ consecutive months
+with a plain-language next-action bullet.
+
+### Loose ends for next session
+- **Top open item**: decide whether to make the GitHub repo private (recommended) or split
+  `CLAUDE.md`'s operational detail into a private doc — public exposure of the full automation
+  map is the most severe finding from this review and wasn't fixed, only flagged, since repo
+  visibility is a call for the user to make deliberately.
+- Switch the Transactions sheet's general access off "Anyone with the link — Editor" (still open
+  since 2026-08-02).
+- The Telegram-message fix in `parse-statement.yml` is code/YAML-verified but not yet exercised
+  against a real WF1 run — confirm on the next real statement drop.
+- `report.py`'s month-over-month trend section and budget-overrun coaching heuristic are scoped
+  (see Iteration 3 above) but not built.
+- Add "validate `X-Telegram-Bot-Api-Secret-Token`" as a hard pre-activation checklist item when
+  WF2 is eventually built (`n8n-wf2-telegram-agent` skill).
+- Same `NIwD3iarrxwH36qj` (archived, not deleted) loose end from 2026-08-02 remains untouched.
+
+### Next session — resume here
+Say **"WF2-build"** to pick up the last remaining planned workflow (see the 2026-08-10 WF6 session
+above for the full handoff checklist), or **"security-hardening"** to work through the loose ends
+above (repo visibility + Sheet access are the two real open risks from this review).

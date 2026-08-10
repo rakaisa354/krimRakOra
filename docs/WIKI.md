@@ -256,13 +256,26 @@ verified against real hand-summed data on both the has-spend and no-spend paths.
 1st-of-month 8am IST cron (active in n8n) reads last month's Transactions/Income/Debts/Goals/
 Net_Worth and sends a Telegram summary plus Drive-uploaded report — verified against the user's
 full real July dataset across all 4 cards, matching an independent formula-based sum exactly
-(₹46061.03). Next up, per the 2026-08-01 council review's ordering: **WF6 (error handler)**,
-then WF2 (Telegram AI agent) last. See `CLAUDE.md`'s `## Session: 2026-08-02`,
-`## Session: 2026-08-02 (cont.) — WF3 built & verified`,
-`## Session: 2026-08-09 — WF4 built & verified`, and
-`## Session: 2026-08-09 — WF5 built & verified` sections for full detail, including follow-up
+(₹46061.03). WF6 (error handler) is now also done and verified: a Telegram alert fires whenever
+any of WF1/WF3/WF4/WF5 fails, confirmed via a real production webhook failure (not the editor's
+manual "Execute workflow" button, which turned out not to reach a workflow's Error Workflow at
+all on this n8n version). **All 6 originally-planned n8n workflows are now built and active** —
+only WF2 (Telegram AI agent) remains, deliberately last per the 2026-08-01 council ordering.
+
+A same-day security/UX/insight-depth review (2026-08-10) found the project's most serious open
+risk to date: **the GitHub repo is public**, and `CLAUDE.md` — checked into it — documents the
+full automation surface (n8n hostname, workflow IDs, service account email, Drive folder IDs).
+Not fixed yet; it's the top item on the next-session list, alongside the still-open Transactions
+sheet link-editable setting. The same review found and fixed a real prompt-injection gap in the
+categorizer (merchant text was interpolated into the Claude prompt unsanitized) and a real UX gap
+in WF1 (Telegram success/failure messages were generic regardless of what actually happened,
+even though `finance.py` already computed the real summary). See `CLAUDE.md`'s
+`## Session: 2026-08-02`, `## Session: 2026-08-02 (cont.) — WF3 built & verified`,
+`## Session: 2026-08-09 — WF4 built & verified`, `## Session: 2026-08-09 — WF5 built & verified`,
+`## Session: 2026-08-10 — WF6 built & verified, Kotak parse bug fixed`, and
+`## Session: 2026-08-10 (cont.) — Red team review` sections for full detail, including follow-up
 items worth doing next time someone's in the n8n UI or Google Sheets: hard-deleting the
 already-archived dead WF1 duplicate, exercising WF3's and WF4's untested error/warning branches
-for real (including WF4's newly-fixed sign filter against a real charge/reversal day), testing
-WF5's Debt Avalanche and Goals Progress sections against real non-empty data, and tightening the
-Transactions sheet's "anyone with the link can edit" sharing setting.
+for real, testing WF5's Debt Avalanche and Goals Progress sections against real non-empty data,
+tightening the Transactions sheet's "anyone with the link can edit" sharing setting, and deciding
+whether to make the GitHub repo private.
