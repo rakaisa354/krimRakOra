@@ -23,7 +23,6 @@ def summarize(month: str) -> str:
     month_txns = [
         t for t in transactions
         if str(t.get("date", "")).startswith(month)
-        and float(t.get("amount_inr", 0)) > 0  # exclude credits
     ]
 
     if not month_txns:
@@ -45,11 +44,18 @@ def summarize(month: str) -> str:
 
     # Budget type breakdown
     budget_labels = {"need": "🏠 Needs", "want": "🎯 Wants", "debt": "💳 Debt", "save": "💰 Savings"}
+    matched = 0.0
     for bt in ["need", "want", "debt", "save"]:
         if bt in by_budget_type:
             pct = by_budget_type[bt] / total * 100
             label = budget_labels.get(bt, bt)
             lines.append(f"{label}: ₹{by_budget_type[bt]:,.0f} ({pct:.0f}%)")
+            matched += by_budget_type[bt]
+
+    other = total - matched
+    if abs(other) > 0.5:
+        pct = other / total * 100
+        lines.append(f"❓ Other/Uncategorized: ₹{other:,.0f} ({pct:.0f}%)")
 
     lines.append("")
     lines.append("*Top categories:*")
