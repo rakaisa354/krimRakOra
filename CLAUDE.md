@@ -14,7 +14,7 @@
 | Phase 1.6 — PDF-to-md extractors (Module 2/3) | ✅ Done for all cards in scope | icici/rbl/sbi/scapia/kotak done + verified against real statements (57 pdf_to_md tests, all passing). Axis and Emirates NBD dropped — see below |
 | Phase 1.7 — Wire extractors into CLI (Module 4) | ✅ Done | `finance.py parse --pdf <file>` now goes straight from an encrypted statement PDF to Sheets in one command, for all 5 in-scope banks |
 | Phase 2 — n8n WF1 | ✅ Verified end-to-end 2026-08-02 | Real statement PDF → Drive → n8n → GitHub Actions → decrypt/parse → 60 real rows written to Transactions sheet → truthful "✅ parsed" Telegram message. Live workflow id is `yO2jvG2di7fSeAz0` (NOT `NIwD3iarrxwH36qj` — see `## Session: 2026-08-02`). WF2 (Telegram agent) still not started. |
-| Phase 3 — n8n WF3+WF4+WF5 | ✅ WF3+WF4+WF5 done 2026-08-09 | WF3 (daily FX sync) built, verified, active — id `ArQY0BWqFYQLTRVA`. WF4 (daily spend summary) built, verified, active — id `LpmXgr7n8UQNjJ5T`. WF5 (monthly report) built, verified, active — id `BxYQfsOgCooNMeri`, see `## Session: 2026-08-09 — WF5 built & verified`. WF6 (error handler) not started — skill exists |
+| Phase 3 — n8n WF3+WF4+WF5+WF6 | ✅ All 4 done 2026-08-10 | WF3 (daily FX sync) built, verified, active — id `ArQY0BWqFYQLTRVA`. WF4 (daily spend summary) built, verified, active — id `LpmXgr7n8UQNjJ5T`. WF5 (monthly report) built, verified, active — id `BxYQfsOgCooNMeri`, see `## Session: 2026-08-09 — WF5 built & verified`. WF6 (error handler) built, verified, active — id `YeWq5wH7cTboCQrL`, registered as Error Workflow on WF1/WF3/WF4/WF5, see `## Session: 2026-08-10 — WF6 built & verified, Kotak parse bug fixed` |
 | Phase 4 — Debt + Net Worth | ✅ Done | `debt_planner.py`, `net_worth.py`, `report.py` written + wired |
 | Phase 5 — Hardening | ✅ Done | 87/87 tests pass; test_sheets flake fixed (see below) |
 
@@ -1074,3 +1074,111 @@ Say "WF6-build" (or paste this section) to a new session on this project and hav
 - WF6 (error handler) is next per the existing ordering — last workflow in the original Phase 2+
   plan. WF2 (Telegram agent) still not started, deliberately last per the council's 2026-08-01
   ordering.
+
+---
+
+## Session: 2026-08-10 — WF6 built & verified, Kotak parse bug fixed
+
+### Real bug: Kotak statement parse crashed CI with "header row is not unique"
+Ran the `WF6-build` checklist, plus fixed a live production bug the user reported at session
+start: a Kotak statement drop through WF1 failed `finance.py parse --pdf` in GitHub Actions with
+`gspread.exceptions.GSpreadException: the header row in the worksheet is not unique`. Root cause:
+`sheets.py read_all()` calls gspread's `get_all_records()`, which pads the header row to match the
+sheet's widest used row before checking uniqueness — and a stray value (`46061.03`, looks like the
+WF5-verification total from the 2026-08-09 session, apparently pasted into Transactions row 273
+column X by accident) had widened the sheet's used range well past the real 12 columns, producing
+many duplicate blank headers. Row 1 itself (`sh.row_values(1)`) was completely correct and
+unique — the bug only showed up through the padded grid read, which is why it wasn't caught by
+eyeballing the header row directly.
+
+**Fix**: `sheets.py`'s `read_all()` now passes `expected_headers=HEADERS.get(tab_name)` (importing
+the canonical `HEADERS` dict from `scripts/setup_sheets.py`, the existing single source of truth)
+to `get_all_records()`. Per gspread's own source (read directly to confirm before trusting it):
+`expected_headers` only requires the given list be a *subset* of the actual header row — it
+doesn't require full-row uniqueness — so this survives stray padding without needing the sheet
+cleaned up. Verified against the live Transactions sheet (279 rows read cleanly, real data intact)
+and the full test suite (87/87 still pass). Pushed as `beb18eb`. The stray `46061.03` value itself
+was left in place (flagged to the user, not deleted — a cosmetic cleanup, not a functional
+problem now that the code tolerates it).
+
+### WF6 build: no schema mismatch this time, unlike WF4/WF5
+Diffed the `n8n-wf6-error-handler` skill runbook against `scripts/setup_sheets.py` per this
+project's standard pre-build discipline — found nothing to fix. Unlike WF4/WF5, WF6 doesn't touch
+any Sheets columns at all; it operates purely on the n8n error-trigger payload (workflow name,
+node name, error message, execution ID/URL), so there was no schema-drift class of bug possible
+here.
+
+### Scope cut: Telegram alert only, no dead-letter file
+The skill's full design includes a Drive dead-letter upload branch (Switch: Has Raw Data? →
+upload full error payload as JSON) for preserving raw input data when a failure carries it. Asked
+the user up front rather than assuming a folder existed — no `dead-letter/` Drive folder exists
+yet, so built WF6 as Error Trigger → Code: Build Alert → Telegram only, with the omission
+documented in the workflow's own sticky note (job, credentials, what's deliberately missing and
+how to add it later) so a future session doesn't mistake it for an oversight.
+
+### Build: `create_workflow` clean, landed in personal project again
+Same pattern as WF3/WF4/WF5 — `create_workflow` built the 3-node graph in one call, confirmed via
+immediate `get_workflow` re-fetch — id `YeWq5wH7cTboCQrL`. Landed in the user's personal n8n
+project by default (same as every prior workflow's first build); user moved it to KRIMRAK and
+registered it as the Error Workflow on WF1/WF3/WF4/WF5 manually via the UI. Reused WF4's exact
+`telegram_lifeos_bot` credential (id `UpBn6PgGEv4G5kgo`, chatId `832207392`) — same convention as
+every other workflow in this project.
+
+### Real finding: manual "Execute workflow" test runs never reach the Error Workflow
+The skill's own Test 1 (throwaway workflow, HTTP Request to `httpstat.us/500`, click "Execute
+workflow" in the editor) failed silently — the throwaway workflow errored 3 times as expected
+(`list_executions` confirmed `❌ error` each time), but WF6 had **zero** executions. This is not a
+wiring mistake: n8n does not route manual/test-panel executions to a workflow's configured Error
+Workflow, only real (production) executions — via an active trigger, webhook, schedule, or the
+API — do. The skill runbook's Test 1 instructions are wrong for this n8n version and should be
+corrected (not yet edited in the skill file itself, flagged here instead).
+
+**Fix**: swapped the throwaway workflow's Manual Trigger for a Webhook node (path
+`wf6-test-trigger`), had the user activate it via the UI (the `activate_workflow` MCP tool 415'd —
+`unsupported media type application/x-www-form-urlencoded` — a connector bug, distinct from every
+previously-reported `update_workflow` bug; `deactivate_workflow` worked fine for cleanup after),
+then fired the real production webhook via `curl` against the URL the user copied from the node
+panel (`https://veloxglobal.app.n8n.cloud/webhook/wf6-test-trigger` — first time this n8n
+instance's actual hostname has been recorded in this file). `mcp__n8n__run_webhook` itself also
+doesn't work in this environment (needs `N8N_WEBHOOK_USERNAME`/`N8N_WEBHOOK_PASSWORD` env vars
+that aren't set) — direct `curl` was the working path.
+
+### Clean verification
+`list_executions` on WF6 showed exactly 1 new execution (`60432`, `✅ success`), started ~1 second
+after the throwaway workflow's real production failure — genuine cause-and-effect, not
+coincidence. The execution-detail API didn't return node-level output content to check
+programmatically, so per this project's standing rule (don't trust a green status alone), asked
+the user to confirm the actual Telegram message — user confirmed it arrived with the expected
+`🚨 Workflow error / Workflow: My workflow 5 / Node: HTTP Request / Error: ...` content. Throwaway
+workflow deactivated after (not deleted — leaving cleanup decisions to the user, consistent with
+how `NIwD3iarrxwH36qj` was handled 2026-08-02).
+
+### Loose ends for next session
+- WF6's dead-letter Drive branch is unbuilt — add it once a `dead-letter/` Drive folder exists
+  (folder ID needed), per the sticky note left on the workflow.
+- The `n8n-wf6-error-handler` skill's Test 1 instructions (manual "Execute workflow" click) don't
+  actually work on this n8n version — worth correcting the skill file itself at some point so the
+  next project that uses it doesn't hit the same dead end.
+- Same `NIwD3iarrxwH36qj` (archived, not deleted) and general-access-sheet loose ends from
+  2026-08-02 remain untouched.
+- The stray `46061.03` value in Transactions row 273 is harmless now (code tolerates it) but still
+  worth deleting from the sheet directly next time the user is in there.
+- **All 6 planned n8n workflows (WF1, WF3, WF4, WF5, WF6) are now built, verified, and active.**
+  Only WF2 (Telegram AI agent) remains — deliberately last per the council's 2026-08-01 ordering.
+  This is the last item in the original Phase 2+ plan.
+
+### Next session — resume here
+**Keyword: `WF2-build`**
+
+Say "WF2-build" (or paste this section) to a new session on this project and have it, in order:
+1. Read the `n8n-wf2-telegram-agent` skill for the workflow runbook.
+2. Apply this project's now-standard pre-build discipline: diff the runbook's field/column
+   references against `scripts/setup_sheets.py` (source of truth) before writing any node.
+3. Build using `create_workflow` for the initial build, hand credential/project-move steps to the
+   user via the n8n UI, re-verify every change with `get_workflow` — never trust a "done" without
+   re-fetching.
+4. Register WF6 as this workflow's Error Workflow too, same as WF1/WF3/WF4/WF5.
+5. Test using a real webhook/trigger call (curl or the n8n UI's own test tools), not the editor's
+   manual "Execute workflow" button — confirmed 2026-08-10 that manual test runs never reach the
+   Error Workflow, so they're not a valid substitute for a real end-to-end test here either.
+6. Update the status table and this file's session log the same way this session did.
