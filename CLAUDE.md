@@ -18,6 +18,7 @@
 | Phase 4 — Debt + Net Worth | ✅ Done | `debt_planner.py`, `net_worth.py`, `report.py` written + wired |
 | Phase 5 — Hardening | ✅ Done, red-teamed 2026-08-10 | 93/93 tests pass; test_sheets flake fixed (see below); categorizer.py hardened against prompt injection + gray-area confidence calibration; WF1 Telegram messages now surface real parse results. Open: GitHub repo is public (top risk, unfixed — user's call), Transactions sheet still link-editable. See `## Session: 2026-08-10 (cont.) — Red team review` |
 | Phase 6 — n8n WF2 | ✅ Built & verified end-to-end 2026-08-10 | Telegram AI Agent, id `ZwoPsgjdauO1atzi`, active, registered WF6 as Error Workflow. ADD_EXPENSE, QUERY_BUDGET (this-month and named-month), and UNKNOWN all verified against real Telegram messages + independent sheet re-reads. **All 6 planned n8n workflows (WF1–WF6) are now built, verified, and active — Phase 2+ is complete.** See `## Session: 2026-08-10 (cont.) — WF2 built & verified` |
+| Phase 7 — Review flow + Income parsing | ✅ Built & verified 2026-08-10 | Low-confidence categorizations now persist a `[review: confidence NN%]` tag in `notes` and are fixable via `scripts/review_transactions.py` (new rows only, not retroactive). `income_parser.py` extracts salary NEFT credits from Kotak savings-account statements into `Income`, routed ahead of card detection in `finance.py parse --pdf` — fixes a real false-success bug where a savings statement silently produced "0 rows written" (misdetected as the Kotak credit card). Verified against 4 real months, live-written for July. `Debts`/`Goals`/`Net_Worth`/`Vendor_Map` still unused. See `## Session: 2026-08-10 (cont.) — review-correction flow + Income parsing` |
 
 ### Axis and Emirates NBD — dropped from scope
 Axis: the only files under `dump/axis/` are savings-account statements (zero transactions,
@@ -80,7 +81,9 @@ Do NOT recreate `venv/` inside the project folder — it will reintroduce the sl
 ---
 
 ## Google Sheets (9 tabs) — all created ✅
-`Income` · `Transactions` · `Debts` · `Budget` · `Goals` · `Net_Worth` · `FX_Rates` · `Categories` (57 rows seeded) · `Vendor_Map`
+`Income` (has real data as of 2026-08-10, see `income_parser.py`) · `Transactions` · `Debts`
+(unused) · `Budget` · `Goals` (unused) · `Net_Worth` (unused) · `FX_Rates` · `Categories` (57 rows
+seeded) · `Vendor_Map` (unused)
 
 ---
 
@@ -103,7 +106,7 @@ date | card_account | merchant | amount | currency | exchange_rate | amount_inr
 |---|---|
 | `finance.py` | CLI entry — commands: `parse` (`--file` or `--pdf`), `decrypt`, `debt`, `worth`, `report` |
 | `config.py` | All env vars loaded from `.env` |
-| `sheets.py` | `get_sheet()`, `append_rows()`, `read_all()` |
+| `sheets.py` | `get_sheet()`, `append_rows()`, `read_all()`, `update_row()` |
 | `fx.py` | `get_rate()`, `convert_to_inr()` |
 | `categorizer.py` | Layer 1: Vendor_Map prefix → Layer 2: Claude batch (1 call per run) |
 | `parsers/__init__.py` | Card detection router |
@@ -121,6 +124,8 @@ date | card_account | merchant | amount | currency | exchange_rate | amount_inr
 | `scripts/query_budget.py` | Month spend summary (used by Telegram WF2) |
 | `scripts/quick_add.py` | Quick-add a transaction |
 | `scripts/sync_fx.py` | Fetch + write today's FX rates |
+| `scripts/review_transactions.py` | Interactive CLI to fix low-confidence categorizations flagged `[review: confidence NN%]` in `notes` |
+| `income_parser.py` | Detects a Kotak savings-account statement (`is_kotak_savings_statement()`), extracts salary NEFT credits (`extract_kotak_savings_income()`) into `Income`. Routed ahead of card detection in `finance.py parse --pdf` |
 
 ---
 
@@ -130,6 +135,7 @@ python finance.py parse --file statements/ICICI_Bank.md
 python finance.py parse --file statements/ICICI_Bank.md --dry-run
 python finance.py parse --pdf dump/icici/statement.pdf          # Module 4 — decrypt+extract+parse in one step
 python finance.py parse --pdf dump/kotak/statement.pdf --dry-run
+python finance.py parse --pdf dump/kotak/savings_statement.pdf  # Kotak savings statement → Income (salary credits only)
 python finance.py debt                          # avalanche plan
 python finance.py debt --extra 5000             # with extra monthly payment
 python finance.py worth                         # net worth snapshot (interactive)
@@ -140,6 +146,7 @@ python finance.py decrypt --file dump/icici/statement.pdf   # Module 1 — outpu
 python3 scripts/setup_sheets.py                 # idempotent sheet setup
 python3 scripts/sync_fx.py                      # FX sync
 python3 scripts/query_budget.py --month 2026-06
+python3 scripts/review_transactions.py           # fix low-confidence categorizations
 python3 scripts/quick_add.py --merchant "Zomato" --amount 350
 ```
 
@@ -178,7 +185,7 @@ pypdf>=4.0, cryptography>=41.0
 
 ## Test suite
 ```bash
-python -m pytest tests/ -q   # 87 tests total, all passing
+python -m pytest tests/ -q   # 98 tests total, all passing (as of 2026-08-10)
 ```
 **test_sheets flake — fixed 2026-07-08.** `tests/test_fx.py` did `sys.modules['sheets'] =
 MagicMock()` at import time to stub `sheets.read_all` before importing `fx`, but never
@@ -205,6 +212,8 @@ imported) before swapping in the mock, and restores it (or deletes the key) righ
 - `tests/test_sbi_pdf_to_md.py` — 9 tests ✅ (sbi extractor)
 - `tests/test_scapia_pdf_to_md.py` — 9 tests ✅ (scapia extractor)
 - `tests/test_kotak_pdf_to_md.py` — 7 tests ✅ (kotak extractor)
+- `tests/test_categorizer.py` — 6 tests ✅ (prompt-injection filter, added 2026-08-10)
+- `tests/test_income_parser.py` — 5 tests ✅ (Kotak savings-statement income extraction, real July fixture, added 2026-08-10)
 - axis/emirates-nbd — dropped from scope, no tests planned
 
 ---
@@ -1359,6 +1368,104 @@ drift in Claude's output can't silently break the query again.
   the security-hardening loose ends above, or genuinely new scope the user decides to add.
 
 ### Next session — resume here
+> **Superseded 2026-08-10** — see
+> `## Session: 2026-08-10 (cont.) — review-correction flow + Income parsing` below for what
+> actually happened. Left below, per this project's own "mention, don't delete" Surgical Changes
+> rule.
+
 Say **"security-hardening"** to work through the two remaining open risks (repo visibility + Sheet
 access) from the 2026-08-10 red-team review — the last unaddressed items from that session. There
 is no next planned workflow; new work from here is either hardening or new scope.
+
+---
+
+## Session: 2026-08-10 (cont.) — review-correction flow + Income parsing
+
+User asked about `security-hardening` but declined both open items when asked directly (repo
+stays public, Transactions sheet access unchanged — both still open, user's call). Redirected to
+two real gaps the user flagged: low-confidence categorizations had no correction path, and the
+`Income`/`Debts`/`Goals`/`Net_Worth`/`Vendor_Map` sheets were all still unused.
+
+### Real bug found: confidence scores were never persisted
+Confirmed via `finance.py`: a row's `_confidence` score was only ever printed to the CLI/Telegram
+output (`⚠ N rows need category review`) and then discarded — never written to the sheet. Once a
+low-confidence row landed in Transactions there was no way to find it again to fix it. Fixed by
+tagging `notes` with `[review: confidence NN%]` at write time
+([finance.py](finance.py:105)) whenever `_confidence < 80`, and adding `sheets.py`'s `update_row()`
+plus a new `scripts/review_transactions.py` CLI that walks every tagged row and lets the user
+correct category/subcategory/budget_type interactively, stripping the tag after. Verified with a
+mocked-sheet run (correction applied, tag stripped, untagged rows skipped) — full suite still
+93/93. **Scope note**: only catches rows written after this fix; past low-confidence rows already
+in the sheet were never tagged and aren't retroactively covered.
+
+### Real bug found: a real July statement drop silently produced 0 rows
+While scoping Income parsing, the user mentioned they'd already dropped a July statement through
+WF1 and it "got parsed." Checked the live GitHub Actions run
+(`31383857286`) — it reported `✓ 0 rows written, 0 duplicates skipped`, a **false success**: the
+file (`40XXXXXXX437.pdf`) is the user's **Kotak savings account** statement, not the Kotak
+Cashback+ credit card, but `detect_card_type()` in `parsers/__init__.py` matches on the bare
+substring `"Kotak Mahindra Bank"`, which appears in both statement types. It silently ran through
+the Kotak *card* parser, found zero matching lines (different format entirely), and reported
+success with nothing written and no warning anywhere. Downloaded the actual file from Drive (via
+`scripts/download_drive_file.py` and the file ID from the Action's log,
+`1nu13nWBDwy_JYdLIMfLnjuH5oTGFYXmK`) and decrypted it locally to confirm.
+
+Also found via `dump/kotak/*437*`: this exact savings-account statement has been sitting in the
+dump folder since April, unused — the Kotak *card* parser was correctly built against the other
+Kotak file (`94XXXXXXXXXXX255`, "Cashback+ Credit Card"), and nobody had noticed the second Kotak
+account existed until this session.
+
+### Income parsing — built and verified against 4 real months
+User confirmed scope: extract only real income (salary NEFT credits) into `Income`, not a full
+ledger of the account's other debits (UPI transfers, mutual-fund SIPs, CC bill payments via CRED
+Club) — those are either already tracked via the credit cards or not spend at all. User named the
+two known salary sources: **KALS BREWERIES** (verified, appears in every real statement checked)
+and **RENGANAYAKI AGENCIES** (per the user's report — not yet seen in any real statement, kept in
+the employer list unverified, flag if/when a statement with that name actually comes through).
+
+Built `income_parser.py`: `is_kotak_savings_statement()` detects the statement type (checks for
+`"Savings Account Transactions"` + `"Account Type  Savings"`, both present, neither in the CC
+statement), and `extract_kotak_savings_income()` finds NEFT credit lines mentioning a known
+employer and reads the deposit amount. **First implementation had a real bug**: it segmented the
+raw text into per-transaction blocks bounded by the *next* transaction's start marker (or
+end-of-text for the last transaction) and took the second-to-last money value in the block as the
+deposit — this worked for months where the salary line wasn't the statement's last transaction,
+but for July (where it was) the block ran past the transaction into the next page's footer/header
+text, and the "second-to-last number" picked up the running balance instead of the real deposit
+(₹2,13,549.72 instead of ₹1,83,842.00). Fixed by using a small fixed-size window (250 chars) right
+after each employer-name match instead of a variable-length block — re-verified against April,
+May, June, and July: ₹1,69,894 / ₹1,83,842 / ₹1,83,842 / ₹1,83,842, one salary credit per month,
+matching by inspection of the raw statement text each time.
+
+Wired into `finance.py`'s `parse --pdf`: `is_kotak_savings_statement()` is now checked *before*
+`detect_card_type()`, so a Kotak savings statement routes to the income extractor and writes to
+`Income` (with its own dedup on `(date, source, amount)`) instead of silently mis-parsing as a
+card statement. 5 new tests in `tests/test_income_parser.py` (real verbatim excerpt from the July
+statement, per this project's standing fixture convention) + full suite 98/98.
+
+**Clean verification**: dry-run against the real July statement showed exactly one row
+(`2026-07-31 | Kals Breweries | ₹183842.00`); user approved a real write; independently re-read
+`Income` via a fresh `read_all()` call afterward and confirmed exactly that one row, matching
+exactly — the first real row that sheet has ever had.
+
+**What this does NOT fix**: the underlying `detect_card_type()` false-positive risk (a bare
+bank-name substring match) still exists for any other bank that ever has both a card and a
+savings product sharing the same name string — not urgent today since Kotak is the only such
+overlap, but worth knowing if a 6th card is ever added.
+
+### Loose ends for next session
+- RENGANAYAKI AGENCIES is an unverified employer pattern — confirm against a real statement
+  whenever one shows up.
+- `Debts`, `Goals`, `Net_Worth`, `Vendor_Map` are still unused (Income now has real data via this
+  session's work, but the other four still have zero real rows) — not addressed this session,
+  flagged by the user, not yet scoped.
+- Only Kotak's income is automated; the user's other income sources (if any) still require manual
+  entry into `Income`.
+- Same security-hardening loose ends from 2026-08-10 (repo visibility, Sheet access) remain open —
+  user declined both when asked directly this session.
+- `NIwD3iarrxwH36qj` (archived, not deleted) loose end from 2026-08-02 remains untouched.
+
+### Next session — resume here
+Say **"security-hardening"** for the still-open repo/Sheet-access items, or bring a real
+statement/data for `Debts`/`Goals`/`Net_Worth`/`Vendor_Map` to start populating those sheets for
+real.
