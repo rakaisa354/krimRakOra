@@ -60,7 +60,7 @@ flowchart LR
     style I fill:#e6f4ea,stroke:#188038
 ```
 
-**Phase 3 (n8n WF3/4/5 — WF3+WF4 done, WF5 not started):** Scheduled jobs — daily FX
+**Phase 3 (n8n WF3/4/5 — all three done):** Scheduled jobs — daily FX
 rate sync, daily spend summary to Telegram, monthly report generation. WF3 (daily FX sync, 6am
 IST) fetches rates for 8 currencies and appends them to the `FX_Rates` sheet, with a fallback
 branch that carries forward yesterday's rates and alerts on Telegram if the API call fails.
@@ -122,6 +122,47 @@ Diagnosed by counting: 5 output rows to Budget, 5x inflation, no coincidence. Fi
 confirming both the digest and the no-spend paths against hand-summed real data — not just a
 plausible-looking Telegram message. See `CLAUDE.md`'s `## Session: 2026-08-09 — WF4 built &
 verified` for full detail.
+
+WF5 (monthly report, 1st of month 8am IST) reads last month's Transactions, Income, Debts, Goals,
+and Net_Worth, and sends a Telegram summary plus a full markdown report uploaded to Drive.
+
+```mermaid
+flowchart LR
+    A["Schedule Trigger\n30 2 1 * * (8am IST)"] --> B["Code: determine\nreport month"]
+    B --> C["Sheets Read x5\n(sequential chain)\nTransactions -> Income -> Debts\n-> Goals -> Net_Worth"]
+    C --> D["Code: build report\n(net all amount_inr,\nno sign filter)"]
+    D --> E["Convert to File\n+ Drive Upload"]
+    E --> F["Telegram\nsummary + Drive link"]
+
+    style A fill:#1a2b22,stroke:#3ecf8e
+    style F fill:#1a2b22,stroke:#3ecf8e
+```
+
+Building it followed the same council-audited process WF4 established. Diffing the skill
+runbook against `scripts/setup_sheets.py` before any node was built caught four schema
+mismatches at once (Debts, Net_Worth, Goals, Income field names) — the same class of bug as
+WF4's `needs/wants/savings` mistake. A first wiring redesign then reproduced WF4's exact
+race-condition bug by fanning all five Sheets Read nodes in parallel with the (wrong) reasoning
+that no Merge node meant no race; corrected to WF4's proven sequential-chain fix before build.
+
+Two real bugs surfaced during testing. First, `getAll` on an empty Debts/Goals sheet returned a
+single truthy-but-blank row rather than an empty array, defeating the code's `priorityDebt ? ...`
+fallback and producing `NaN%` in the report — fixed by filtering out rows with no
+`debt_name`/`goal_name`. Second, and more consequential: the Transactions filter excluded
+`amount_inr <= 0` rows, but real statements contain charge/reversal/remainder triplets (a
+purchase immediately reversed, then re-charged at the true net amount, same pattern as Kotak/
+ICICI EMI conversions) — filtering to positives only double-counted every reversed charge as
+real spend. The first "verified" pass missed this because hand-summing the code's own filtered
+output only confirms internal consistency, not correctness; the user caught it by independently
+computing the expected net total from first principles and finding it didn't match. Fixed by
+removing the sign filter entirely — verified against real July data (`-32564.71`), then again
+against a full real dataset from all 4 cards after the user finished loading actual statements
+(`+46061.03`, matching a formula-based independent sum exactly). The identical filter bug was
+then found and fixed in WF4 proactively, same session, before any live incident. See `CLAUDE.md`'s
+`## Session: 2026-08-09 — WF5 built & verified` and the following sessions for full detail,
+including the final lesson: verify sheet totals with a formula, not a manual row selection — this
+project's Transactions sheet is append-only by import batch per card, not sorted by date, which
+makes eyeballing genuinely unreliable.
 
 **Phase 4 (done):** Debt payoff planning (hybrid avalanche/snowball, pays off small balances
 first for psychological wins, then attacks highest-interest debt) and net worth tracking.
@@ -204,17 +245,24 @@ Emirates NBD was confirmed unnecessary by the user.
 
 ## Current state and what's next
 
-As of 2026-08-09, the statement-ingestion pipeline (WF1), the daily FX sync (WF3), and the daily
-spend summary (WF4) are all done and verified. WF1: a real statement PDF dropped in Drive goes all
-the way to a real row in the Transactions sheet and a truthful Telegram confirmation, with no
-manual steps in between. WF3: a daily 6am IST cron (active in n8n) fetches and writes 8 currencies'
-INR rates to the `FX_Rates` sheet, with a tested-but-not-yet-fired fallback path for API failures.
-WF4: a daily 9pm IST cron (active in n8n) reads today's spend and this month's Budget, and sends a
-truthful Telegram digest — verified against real hand-summed data on both the has-spend and
-no-spend paths. Next up, per the 2026-08-01 council review's ordering: **WF5 (monthly report)**,
+As of 2026-08-10, the statement-ingestion pipeline (WF1) and all three Phase 3 scheduled jobs
+(WF3 daily FX sync, WF4 daily spend summary, WF5 monthly report) are done and verified. WF1: a
+real statement PDF dropped in Drive goes all the way to a real row in the Transactions sheet and
+a truthful Telegram confirmation, with no manual steps in between. WF3: a daily 6am IST cron
+(active in n8n) fetches and writes 8 currencies' INR rates to the `FX_Rates` sheet, with a
+tested-but-not-yet-fired fallback path for API failures. WF4: a daily 9pm IST cron (active in
+n8n) reads today's spend and this month's Budget, and sends a truthful Telegram digest —
+verified against real hand-summed data on both the has-spend and no-spend paths. WF5: a monthly
+1st-of-month 8am IST cron (active in n8n) reads last month's Transactions/Income/Debts/Goals/
+Net_Worth and sends a Telegram summary plus Drive-uploaded report — verified against the user's
+full real July dataset across all 4 cards, matching an independent formula-based sum exactly
+(₹46061.03). Next up, per the 2026-08-01 council review's ordering: **WF6 (error handler)**,
 then WF2 (Telegram AI agent) last. See `CLAUDE.md`'s `## Session: 2026-08-02`,
-`## Session: 2026-08-02 (cont.) — WF3 built & verified`, and
-`## Session: 2026-08-09 — WF4 built & verified` sections for full detail, including follow-up items
-worth doing next time someone's in the n8n UI or Google Sheets: hard-deleting the already-archived
-dead WF1 duplicate, exercising WF3's and WF4's untested error/warning branches for real, and
-tightening the Transactions sheet's "anyone with the link can edit" sharing setting.
+`## Session: 2026-08-02 (cont.) — WF3 built & verified`,
+`## Session: 2026-08-09 — WF4 built & verified`, and
+`## Session: 2026-08-09 — WF5 built & verified` sections for full detail, including follow-up
+items worth doing next time someone's in the n8n UI or Google Sheets: hard-deleting the
+already-archived dead WF1 duplicate, exercising WF3's and WF4's untested error/warning branches
+for real (including WF4's newly-fixed sign filter against a real charge/reversal day), testing
+WF5's Debt Avalanche and Goals Progress sections against real non-empty data, and tightening the
+Transactions sheet's "anyone with the link can edit" sharing setting.
