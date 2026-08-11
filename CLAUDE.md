@@ -121,7 +121,7 @@ date | card_account | merchant | amount | currency | exchange_rate | amount_inr
 | `parsers/kotak.py` | Kotak Mahindra Bank — Cr suffix for credits/payments |
 | `debt_planner.py` | Hybrid avalanche+snowball — `load_debts()`, `run_avalanche()`, `print_plan()` |
 | `net_worth.py` | Monthly snapshot — `snapshot()` Click command |
-| `report.py` | Monthly report — `report()` Click command + Drive upload |
+| `report.py` | Monthly report — `report()` Click command + Drive upload. `_prev_month()`/`_mom_line()` power the Month-over-Month section |
 | `pdf_decrypt.py` | Module 1 — `decrypt_pdf()` tries `CARD_PASSWORDS` from `.env`, `extract_text()` for downstream use. Pure-Python (pypdf + cryptography), no third-party API. |
 | `pdf_to_md.py` | Module 2/3 — raw `extract_text()` output → pipe-table markdown each `parsers/*.py` expects. One `extract_<bank>_transactions()` + `<bank>_pdf_text_to_md()` pair per issuer. Done: icici, rbl, sbi, scapia, kotak. Axis/emirates-nbd dropped (see status table). Wired into `finance.py`'s `parse --pdf` (Module 4). |
 | `scripts/setup_sheets.py` | Idempotent 9-tab setup + Categories seed |
@@ -190,7 +190,7 @@ pypdf>=4.0, cryptography>=41.0
 
 ## Test suite
 ```bash
-python -m pytest tests/ -q   # 106 tests total, all passing (as of 2026-08-10)
+python -m pytest tests/ -q   # 112 tests total, all passing (as of 2026-08-11)
 ```
 **test_sheets flake — fixed 2026-07-08.** `tests/test_fx.py` did `sys.modules['sheets'] =
 MagicMock()` at import time to stub `sheets.read_all` before importing `fx`, but never
@@ -220,6 +220,7 @@ imported) before swapping in the mock, and restores it (or deletes the key) righ
 - `tests/test_categorizer.py` — 6 tests ✅ (prompt-injection filter, added 2026-08-10)
 - `tests/test_income_parser.py` — 5 tests ✅ (Kotak savings-statement income extraction, real July fixture, added 2026-08-10)
 - `tests/test_savings_ledger.py` — 8 tests ✅ (full Kotak savings-statement ledger classification, real July fixture — all 53 real transactions, contiguous, added 2026-08-10)
+- `tests/test_report.py` — 6 tests ✅ (`_prev_month` year rollover, `_mom_line` delta formatting, added 2026-08-11)
 - axis/emirates-nbd — dropped from scope, no tests planned
 
 ---
@@ -1812,17 +1813,67 @@ exactly what was appended, same discipline as every other sheet write this proje
 - No goal has a `monthly_contribution` or `target_date` yet, so `months_remaining` is blank on all
   three — revisit once the user wants a concrete pace/deadline instead of an informal draw from
   the save bucket.
-- `report.py`'s Debt Avalanche and Goals Progress sections are now finally exercisable against
-  real data (previously always rendered `N/A`/empty per the 2026-08-09 WF5 session) — worth a real
-  test run.
-- The month-over-month trend + budget-overrun coaching enhancement to `report.py`, scoped in the
-  2026-08-10 red-team review, is still not built — the natural next step for the "more AI-driven
-  advisor" direction the user asked for this session.
+- The budget-overrun coaching heuristic (flag any `budget_type` over 100% of allocation for 2+
+  consecutive months, deterministic — not a second LLM call) is still scoped but not built, per
+  the 2026-08-10 red-team review.
 - Same gold-loan-terms-provisional, CRED Club/K Radha Gouri automation gap, security-hardening,
   and `NIwD3iarrxwH36qj` loose ends from prior sessions remain untouched.
 
 ### Next session — resume here
+> **Superseded 2026-08-11** — see `## Session: 2026-08-11 (cont.) — month-over-month trend built`
+> below for what actually happened. Left below, per this project's own "mention, don't delete"
+> Surgical Changes rule.
+
 Run `python finance.py report --month 2026-08 --dry-run` to see the Debt Avalanche/Goals Progress
 sections render with real data for the first time, then build the month-over-month trend +
 budget-overrun coaching layer scoped in the 2026-08-10 red-team review. Otherwise say
 **"security-hardening"** for the still-open repo/Sheet-access items.
+
+---
+
+## Session: 2026-08-11 (cont.) — month-over-month trend built
+
+Ran `python finance.py report --month 2026-08 --dry-run` per the prior session's handoff — the
+Debt Avalanche and Goals Progress sections rendered correctly with real data for the first time
+(Priority: Kotak Gold Loan GLN4805528 @ 11.5%, Goals bars for Emergency/Travel/Long-Term
+Investment). Then built the month-over-month trend piece scoped in the 2026-08-10 red-team review.
+
+### Real bug found while reading the code, not while building the feature
+`report.py`'s `spend_total` filtered to `amount_inr > 0` before summing — the exact sign-filter
+bug already found and fixed in WF4/WF5's n8n Code nodes and `query_budget.py` on 2026-08-09
+(double-counts a reversed-then-recharged transaction as spend instead of netting it out). This
+Python file had never gotten the same fix — nobody had gone looking at it since the original
+WF4/WF5 fix session, since `report.py`'s CLI output and WF5's live n8n workflow are two separate
+code paths that happen to compute the same number. Fixed by summing all signed `amount_inr`
+values, no filter — same fix pattern as before. Visible in the real dry-run output: August 2026's
+partial-month "Spent" flipped from a positive figure to **-₹39,047** (net-signed, correct — August
+so far has more credits than debits).
+
+### Built: `_prev_month()` + `_mom_line()` + a new `## Month-over-Month` section
+`_prev_month()` reuses `dateutil.relativedelta` (already a project dependency, used by
+`debt_planner.py`) to get the prior `YYYY-MM`. `_mom_line()` formats a ▲/▼ delta with % change,
+falling back to "no prior data" when the prior month has zero (not just handling a `ZeroDivisionError`
+blindly — a genuinely empty prior month is a real, expected case here, not an error). Section
+compares Income/Spent/Saved against the prior month, reusing the existing `_month_filter()` helper
+against `prev_month` — exactly as scoped in the 2026-08-10 red-team review.
+
+### Clean verification
+6 new tests in `tests/test_report.py` (`_prev_month` including year rollover, `_mom_line` for
+increase/decrease/no-prior-data/negative-prior-month) — all pass, full suite 112/112. Real dry-run
+against 2026-08 showed correct output: `Income: ₹0 ▼ -100% vs ₹183,842 (2026-07)` (July's salary
+falls outside the August window, expected) and `Saved: ₹39,047 ▲ +502% vs ₹-9,704 (2026-07)`
+(July's own net was negative from the ₹4,37,770 gold-loan-related debit, correctly reflected).
+
+### Loose ends for next session
+- The budget-overrun coaching heuristic (2+ consecutive months over 100% of a `budget_type`
+  allocation) is the one remaining piece scoped in the 2026-08-10 red-team review, still not
+  built.
+- Only `report.py`'s Python CLI got the sign-filter fix this session — WF5's live n8n workflow
+  runs its own separate JS Code node, already fixed independently on 2026-08-09, so no action
+  needed there, but worth remembering these are two separate code paths that can drift.
+- Same gold-loan-terms-provisional, CRED Club/K Radha Gouri automation gap, security-hardening,
+  and `NIwD3iarrxwH36qj` loose ends from prior sessions remain untouched.
+
+### Next session — resume here
+Build the budget-overrun coaching heuristic on `report.py` (last piece of the 2026-08-10 red-team
+scope), or say **"security-hardening"** for the still-open repo/Sheet-access items.
