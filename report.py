@@ -2,6 +2,7 @@
 import click
 from datetime import datetime
 from collections import defaultdict
+from dateutil.relativedelta import relativedelta
 from sheets import read_all
 
 
@@ -15,6 +16,19 @@ def _safe_float(val, default=0.0) -> float:
         return float(val or default)
     except (ValueError, TypeError):
         return default
+
+
+def _prev_month(month: str) -> str:
+    return (datetime.strptime(month, '%Y-%m') - relativedelta(months=1)).strftime('%Y-%m')
+
+
+def _mom_line(label: str, curr: float, prev: float, prev_month: str) -> str:
+    if prev == 0:
+        return f"- {label}: ₹{curr:,.0f} _(no {prev_month} data to compare)_"
+    delta = curr - prev
+    pct = delta / abs(prev) * 100
+    arrow = '▲' if delta > 0 else ('▼' if delta < 0 else '─')
+    return f"- {label}: ₹{curr:,.0f} {arrow} {pct:+.0f}% vs ₹{prev:,.0f} ({prev_month})"
 
 
 @click.command()
@@ -33,14 +47,23 @@ def report(month: str, dry_run: bool):
     net_worth    = read_all('Net_Worth')
 
     # ── Income vs Spend ──────────────────────────────────────────
+    # Sums ALL signed amounts, not just positives — a positive-only filter
+    # double-counts reversed charges (a purchase reversed then re-charged at
+    # the true net amount) as real spend instead of netting them out. Same
+    # bug already fixed in WF4/WF5's n8n Code nodes and query_budget.py on
+    # 2026-08-09; this file had never gotten the same fix.
     income_total = sum(_safe_float(r.get('amount_inr')) for r in income_rows)
-    spend_total  = sum(
-        _safe_float(r.get('amount_inr'))
-        for r in transactions
-        if _safe_float(r.get('amount_inr')) > 0
-    )
+    spend_total  = sum(_safe_float(r.get('amount_inr')) for r in transactions)
     saved    = income_total - spend_total
     save_pct = (saved / income_total * 100) if income_total else 0
+
+    # ── Month-over-month ─────────────────────────────────────────
+    prev_month = _prev_month(month)
+    prev_transactions = _month_filter(read_all('Transactions'), prev_month)
+    prev_income_rows  = _month_filter(read_all('Income'), prev_month)
+    prev_income_total = sum(_safe_float(r.get('amount_inr')) for r in prev_income_rows)
+    prev_spend_total  = sum(_safe_float(r.get('amount_inr')) for r in prev_transactions)
+    prev_saved        = prev_income_total - prev_spend_total
 
     # ── Budget breakdown ─────────────────────────────────────────
     budget_month = [r for r in budget_rows if str(r.get('month', '')).startswith(month)]
@@ -127,6 +150,12 @@ def report(month: str, dry_run: bool):
             f"Payoff target: {priority_debt.get('due_date', 'TBD')}\n\n"
         )
 
+    mom_lines = [
+        _mom_line('Income', income_total, prev_income_total, prev_month),
+        _mom_line('Spent', spend_total, prev_spend_total, prev_month),
+        _mom_line('Saved', saved, prev_saved, prev_month),
+    ]
+
     md_report = f"""# Financial Report — {month}
 Generated: {timestamp}
 
@@ -136,6 +165,9 @@ Generated: {timestamp}
 | Income | ₹{income_total:,.0f} |
 | Spent  | ₹{spend_total:,.0f} |
 | Saved  | ₹{saved:,.0f} ({save_pct:.0f}% of income) |
+
+## Month-over-Month
+{chr(10).join(mom_lines)}
 
 ## Budget Breakdown
 {chr(10).join(budget_lines)}
