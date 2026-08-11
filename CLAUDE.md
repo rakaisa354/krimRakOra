@@ -85,7 +85,8 @@ Do NOT recreate `venv/` inside the project folder — it will reintroduce the sl
 `Income` (has real data as of 2026-08-10, see `income_parser.py`) · `Transactions` (now includes
 `card_account = "Kotak Savings"` rows via `savings_ledger.py`, not just the 5 credit cards) ·
 `Debts` (1 real row as of 2026-08-11 — Kotak Gold Loan GLN4805528, rate/EMI provisional pending
-next month's statement) · `Budget` · `Goals` (unused) · `Net_Worth` (unused) ·
+next month's statement) · `Budget` · `Goals` (3 rows as of 2026-08-11) · `Net_Worth` (1 row as of
+2026-08-11) ·
 `FX_Rates` · `Categories` (65 rows, seeded 2026-08-11) · `Vendor_Map` (22 rows, trained 2026-08-11)
 
 ---
@@ -1747,12 +1748,81 @@ the wrong model for this debt type, per the finding above.
 - `interest_rate` and `emi_amount` on the `Kotak Gold Loan GLN4805528` row are both provisional —
   confirm against next month's real Kotak statement and correct if wrong.
 - `due_date` is still blank on this row — fill in once known.
-- `Goals`/`Net_Worth` are still unused.
 - CRED Club / K Radha Gouri automation gap (from the prior session) remains unaddressed.
 - Same security-hardening and `NIwD3iarrxwH36qj` loose ends from 2026-08-10 remain untouched.
 
 ### Next session — resume here
+> **Superseded 2026-08-11** — see `## Session: 2026-08-11 (cont.) — Goals and Net_Worth
+> populated` below for what actually happened. Left below, per this project's own "mention, don't
+> delete" Surgical Changes rule.
+
 Once next month's Kotak statement comes in, confirm the gold loan's real rate/EMI/maturity terms
 and correct the `Debts` row if needed — that's also the natural trigger to revisit whether
 `debt_planner.py` needs an interest-only debt mode. Otherwise say **"security-hardening"** for the
 still-open repo/Sheet-access items.
+
+---
+
+## Session: 2026-08-11 (cont.) — Goals and Net_Worth populated
+
+User deferred security-hardening again and asked instead to make the project "more AI-driven" as
+a financial controller/advisor. Checked the available financial skills catalog first — the
+`financial-analysis:*` family (DCF, comps, LBO) is corporate-finance tooling, not applicable here.
+The real gap: `Goals` and `Net_Worth` were the only two sheets (besides now-trained `Vendor_Map`)
+still empty, and `report.py`'s Debt Avalanche / Goals Progress sections have never been exercised
+against real data. Recommended populating those two sheets first, then building the
+month-over-month + budget-overrun coaching layer on `report.py` scoped back in the 2026-08-10
+red-team review — user agreed, starting with Goals/Net_Worth.
+
+### Net_Worth: first real snapshot written
+`net_worth.py snapshot` run with real user-supplied figures: savings balance ₹19,565.71,
+investments ₹13,85,000 (SCB ₹12,60,000 — funded via transfers to spouse K Swathithra's account,
+amount itself user-flagged as "or more, unsure" — + Nippon SIP ~₹25,000, also unsure — + ₹1,00,000
+in shares via spouse), other assets ₹0. `net_worth.py` auto-reads liabilities from `Debts`
+(₹4,57,829, the gold loan from the prior session). Result: **₹9,46,737 net worth** (₹14,04,566
+assets − ₹4,57,829 liabilities). Independently re-read `Net_Worth` afterward — 1 row, matched
+exactly. The SCB and Nippon figures are both explicitly uncertain per the user's own words — not
+treated as final, flagged here so a future session doesn't quote them as verified.
+
+### Goals: 3 rows, per this project's debt-kill-phase priority order
+Followed the `goal-track` skill's stated priority (emergency fund first, non-negotiable) — asked
+the user goal-by-goal rather than assuming:
+- **Emergency Fund** — target ₹3,00,000, ₹0 saved, no fixed `monthly_contribution` (draws
+  informally from the existing 20% "save" budget bucket rather than a dedicated figure).
+- **Travel Fund** — target ₹15,00,000, ₹0 saved, same no-fixed-contribution choice.
+- **Long-Term Investment** — target ₹200,00,00,000 (₹200 crore). First stated as "100,00,00,000"
+  which read as a likely typo given the user's income context (~₹1.83L/month salary) — flagged it
+  directly rather than writing it silently; user confirmed 200 crore is the real, deliberately
+  aspirational long-term target, not a typo. `saved_so_far` set to ₹13,85,000, matching the
+  investment total just entered into `Net_Worth` (same underlying money, not double-counted as a
+  separate pool).
+
+All three written with blank `target_date`/`monthly_contribution`/`months_remaining` — the user
+didn't want fixed monthly figures for any of them this round, and the `goal-track` skill's
+`months_remaining` auto-calc (`(target - saved) / monthly_contribution`) can't be computed without
+one anyway.
+
+### Clean verification
+Independently re-read both `Goals` (3 rows) and `Net_Worth` (1 row) after writing — values matched
+exactly what was appended, same discipline as every other sheet write this project has made.
+
+### Loose ends for next session
+- SCB (₹12,60,000) and Nippon (~₹25,000) investment figures are both user-flagged as uncertain —
+  confirm real values next time the user checks those accounts.
+- No goal has a `monthly_contribution` or `target_date` yet, so `months_remaining` is blank on all
+  three — revisit once the user wants a concrete pace/deadline instead of an informal draw from
+  the save bucket.
+- `report.py`'s Debt Avalanche and Goals Progress sections are now finally exercisable against
+  real data (previously always rendered `N/A`/empty per the 2026-08-09 WF5 session) — worth a real
+  test run.
+- The month-over-month trend + budget-overrun coaching enhancement to `report.py`, scoped in the
+  2026-08-10 red-team review, is still not built — the natural next step for the "more AI-driven
+  advisor" direction the user asked for this session.
+- Same gold-loan-terms-provisional, CRED Club/K Radha Gouri automation gap, security-hardening,
+  and `NIwD3iarrxwH36qj` loose ends from prior sessions remain untouched.
+
+### Next session — resume here
+Run `python finance.py report --month 2026-08 --dry-run` to see the Debt Avalanche/Goals Progress
+sections render with real data for the first time, then build the month-over-month trend +
+budget-overrun coaching layer scoped in the 2026-08-10 red-team review. Otherwise say
+**"security-hardening"** for the still-open repo/Sheet-access items.
