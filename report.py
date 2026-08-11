@@ -31,6 +31,62 @@ def _mom_line(label: str, curr: float, prev: float, prev_month: str) -> str:
     return f"- {label}: ₹{curr:,.0f} {arrow} {pct:+.0f}% vs ₹{prev:,.0f} ({prev_month})"
 
 
+BUDGET_SPLITS = {'need': 0.40, 'debt': 0.30, 'save': 0.20, 'want': 0.10}
+BUDGET_LABELS = {'need': 'Needs', 'debt': 'Debt', 'save': 'Savings', 'want': 'Wants'}
+
+
+def _budget_actuals(month: str, budget_rows: list[dict], transactions: list[dict], income_total: float) -> list[dict]:
+    """Per-budget_type allocated vs actual for one month. Uses Budget sheet
+    rows for that month if present, else falls back to the 40/30/20/10
+    split of income_total — same fallback report() always used, now shared
+    so month-over-month overrun comparisons use identical logic for both
+    months instead of two independently-drifting implementations."""
+    budget_month = [r for r in budget_rows if str(r.get('month', '')).startswith(month)]
+
+    actual_by_type: dict[str, float] = defaultdict(float)
+    for r in transactions:
+        bt = r.get('budget_type', 'Uncategorized')
+        actual_by_type[bt] += _safe_float(r.get('amount_inr'))
+
+    rows = []
+    if budget_month:
+        for b in budget_month:
+            bt = b.get('budget_type', b.get('category', ''))
+            alloc = _safe_float(b.get('allocated_inr'))
+            rows.append({'bt': bt, 'label': BUDGET_LABELS.get(bt, bt), 'alloc': alloc, 'actual': actual_by_type.get(bt, 0.0)})
+    else:
+        for bt, pct in BUDGET_SPLITS.items():
+            alloc = income_total * pct
+            rows.append({'bt': bt, 'label': BUDGET_LABELS[bt], 'alloc': alloc, 'actual': actual_by_type.get(bt, 0.0)})
+    return rows
+
+
+def _overrun_lines(curr_rows: list[dict], prev_rows: list[dict], month: str, prev_month: str) -> list[str]:
+    """Flag any budget_type over 100% of its allocation in BOTH the current
+    and prior month — a single over-budget month is normal variance, two in
+    a row is a pattern worth a nudge. Deterministic, no LLM call."""
+    prev_by_bt = {r['bt']: r for r in prev_rows}
+    lines = []
+    for r in curr_rows:
+        if r['alloc'] <= 0:
+            continue
+        curr_pct = r['actual'] / r['alloc'] * 100
+        if curr_pct <= 100:
+            continue
+        prev = prev_by_bt.get(r['bt'])
+        if not prev or prev['alloc'] <= 0:
+            continue
+        prev_pct = prev['actual'] / prev['alloc'] * 100
+        if prev_pct <= 100:
+            continue
+        lines.append(
+            f"- **{r['label']}** over budget 2 months running: {curr_pct:.0f}% of allocation this "
+            f"month ({month}), {prev_pct:.0f}% last month ({prev_month}). Consider lowering the "
+            f"{r['label'].lower()} allocation or cutting spend in this bucket."
+        )
+    return lines
+
+
 @click.command()
 @click.option('--month', required=True, help='Report month in YYYY-MM format, e.g. 2026-05')
 @click.option('--dry-run', is_flag=True, default=False, help='Print report; skip Drive upload')
@@ -66,30 +122,14 @@ def report(month: str, dry_run: bool):
     prev_saved        = prev_income_total - prev_spend_total
 
     # ── Budget breakdown ─────────────────────────────────────────
-    budget_month = [r for r in budget_rows if str(r.get('month', '')).startswith(month)]
+    curr_budget_rows = _budget_actuals(month, budget_rows, transactions, income_total)
+    budget_table_rows = [(r['label'], r['alloc'], r['actual'], r['alloc'] - r['actual']) for r in curr_budget_rows]
 
-    actual_by_type: dict[str, float] = defaultdict(float)
-    for r in transactions:
-        bt = r.get('budget_type', 'Uncategorized')
-        actual_by_type[bt] += _safe_float(r.get('amount_inr'))
-
-    # Fallback: derive from income using 40/30/20/10 split if no Budget rows
-    BUDGET_SPLITS = {'need': 0.40, 'debt': 0.30, 'save': 0.20, 'want': 0.10}
-    BUDGET_LABELS = {'need': 'Needs', 'debt': 'Debt', 'save': 'Savings', 'want': 'Wants'}
-    budget_table_rows = []
-    if budget_month:
-        for b in budget_month:
-            bt       = b.get('budget_type', b.get('category', ''))
-            alloc    = _safe_float(b.get('allocated_inr'))
-            actual   = actual_by_type.get(bt, 0.0)
-            variance = alloc - actual
-            budget_table_rows.append((BUDGET_LABELS.get(bt, bt), alloc, actual, variance))
-    else:
-        for bt, pct in BUDGET_SPLITS.items():
-            alloc    = income_total * pct
-            actual   = actual_by_type.get(bt, 0.0)
-            variance = alloc - actual
-            budget_table_rows.append((BUDGET_LABELS[bt], alloc, actual, variance))
+    # ── Budget-overrun coaching ──────────────────────────────────
+    # Deterministic heuristic (not a second LLM call): flag any budget_type
+    # over 100% of its allocation in both this month and the prior one.
+    prev_budget_rows = _budget_actuals(prev_month, budget_rows, prev_transactions, prev_income_total)
+    overrun_lines = _overrun_lines(curr_budget_rows, prev_budget_rows, month, prev_month)
 
     # ── Top merchants ────────────────────────────────────────────
     merchant_spend: dict[str, float] = defaultdict(float)
@@ -126,6 +166,10 @@ def report(month: str, dry_run: bool):
         goals_lines.append(f"- {g['name']}: {g['pct']:.0f}% [{bar}] ₹{g['saved']:,.0f} / ₹{g['target']:,.0f}")
 
     merchant_lines = [f"{i+1}. {m}: ₹{a:,.0f}" for i, (m, a) in enumerate(top_merchants)]
+
+    overrun_section = ''
+    if overrun_lines:
+        overrun_section = "\n**⚠ Budget overrun watch:**\n" + chr(10).join(overrun_lines) + "\n"
 
     # Net worth this month
     nw_row = next((r for r in reversed(net_worth) if str(r.get('month', '')).startswith(month)), {})
@@ -171,7 +215,7 @@ Generated: {timestamp}
 
 ## Budget Breakdown
 {chr(10).join(budget_lines)}
-
+{overrun_section}
 {debt_section}## Goals
 {chr(10).join(goals_lines) if goals_lines else '_No goals configured._'}
 {nw_section}
