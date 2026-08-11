@@ -190,7 +190,7 @@ pypdf>=4.0, cryptography>=41.0
 
 ## Test suite
 ```bash
-python -m pytest tests/ -q   # 112 tests total, all passing (as of 2026-08-11)
+python -m pytest tests/ -q   # 117 tests total, all passing (as of 2026-08-11)
 ```
 **test_sheets flake — fixed 2026-07-08.** `tests/test_fx.py` did `sys.modules['sheets'] =
 MagicMock()` at import time to stub `sheets.read_all` before importing `fx`, but never
@@ -220,7 +220,7 @@ imported) before swapping in the mock, and restores it (or deletes the key) righ
 - `tests/test_categorizer.py` — 6 tests ✅ (prompt-injection filter, added 2026-08-10)
 - `tests/test_income_parser.py` — 5 tests ✅ (Kotak savings-statement income extraction, real July fixture, added 2026-08-10)
 - `tests/test_savings_ledger.py` — 8 tests ✅ (full Kotak savings-statement ledger classification, real July fixture — all 53 real transactions, contiguous, added 2026-08-10)
-- `tests/test_report.py` — 6 tests ✅ (`_prev_month` year rollover, `_mom_line` delta formatting, added 2026-08-11)
+- `tests/test_report.py` — 11 tests ✅ (`_prev_month` year rollover, `_mom_line` delta formatting, `_budget_actuals` + `_overrun_lines` for the budget-overrun coaching heuristic, added 2026-08-11)
 - axis/emirates-nbd — dropped from scope, no tests planned
 
 ---
@@ -1875,5 +1875,54 @@ falls outside the August window, expected) and `Saved: ₹39,047 ▲ +502% vs �
   and `NIwD3iarrxwH36qj` loose ends from prior sessions remain untouched.
 
 ### Next session — resume here
+> **Superseded 2026-08-11** — see `## Session: 2026-08-11 (cont.) — budget-overrun coaching
+> heuristic built` below for what actually happened. Left below, per this project's own
+> "mention, don't delete" Surgical Changes rule.
+
 Build the budget-overrun coaching heuristic on `report.py` (last piece of the 2026-08-10 red-team
 scope), or say **"security-hardening"** for the still-open repo/Sheet-access items.
+
+---
+
+## Session: 2026-08-11 (cont.) — budget-overrun coaching heuristic built
+
+Last remaining piece of the 2026-08-10 red-team review's scoped-but-unbuilt list.
+
+### Built: `_budget_actuals()` + `_overrun_lines()`
+Refactored the existing budget-breakdown logic (previously inline, computed once for the report
+month only) into `_budget_actuals(month, budget_rows, transactions, income_total)` — a pure
+function returning per-`budget_type` allocated-vs-actual, using real `Budget` sheet rows if
+present for that month, else falling back to the existing 40/30/20/10 income split. Sharing this
+helper for both the current and prior month (instead of writing a second copy for the
+month-over-month comparison) means the two months are guaranteed to use identical logic — no risk
+of the comparison silently drifting out of sync the way `report.py`'s own spend-sign filter and
+WF5's separate n8n Code node had already drifted from each other in the prior session.
+
+`_overrun_lines(curr_rows, prev_rows, month, prev_month)` flags any `budget_type` over 100% of its
+allocation in **both** months — a single over-budget month is normal variance, two in a row is a
+pattern worth surfacing. Deterministic, no second Claude API call (keeps the project's
+zero-recurring-cost design intact, same reasoning as every other heuristic in this file). Renders
+as a `**⚠ Budget overrun watch:**` block under `## Budget Breakdown`, silent when nothing
+qualifies.
+
+### Verification
+5 new tests in `tests/test_report.py` (Budget-sheet-present vs fallback-split paths for
+`_budget_actuals`; two-consecutive-months-over, only-one-month-over, and no-prior-data cases for
+`_overrun_lines`) — full suite 117/117. Ran the real report against 2026-08 — correctly silent
+(nothing's currently over budget). Built a synthetic mocked-sheet scenario (Wants: ₹15,000 actual
+vs ₹10,000 allocated this month, ₹11,000 vs ₹10,000 last month) and confirmed the exact expected
+line renders: "Wants over budget 2 months running: 150% ... 110% ...".
+
+### Loose ends for next session
+- This closes out the entire 2026-08-10 red-team review's scoped enhancement list (prompt-
+  injection filter, gray-area confidence calibration, month-over-month trend, budget-overrun
+  coaching — all built now).
+- Same gold-loan-terms-provisional, CRED Club/K Radha Gouri automation gap, security-hardening,
+  and `NIwD3iarrxwH36qj` loose ends from prior sessions remain untouched.
+- No new "AI-driven advisor" scope has been defined beyond what's now built — next enhancement
+  ideas (proactive Telegram nudges, etc.) would need fresh scoping with the user.
+
+### Next session — resume here
+Say **"security-hardening"** for the still-open repo/Sheet-access items, or bring new scope for
+further "AI-driven advisor" features (e.g. proactive Telegram budget nudges) — the red-team
+review's enhancement list is now fully built.
