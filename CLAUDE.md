@@ -19,7 +19,7 @@
 | Phase 5 — Hardening | ✅ Done, red-teamed 2026-08-10 | 93/93 tests pass; test_sheets flake fixed (see below); categorizer.py hardened against prompt injection + gray-area confidence calibration; WF1 Telegram messages now surface real parse results. Open: GitHub repo is public (top risk, unfixed — user's call), Transactions sheet still link-editable. See `## Session: 2026-08-10 (cont.) — Red team review` |
 | Phase 6 — n8n WF2 | ✅ Built & verified end-to-end 2026-08-10 | Telegram AI Agent, id `ZwoPsgjdauO1atzi`, active, registered WF6 as Error Workflow. ADD_EXPENSE, QUERY_BUDGET (this-month and named-month), and UNKNOWN all verified against real Telegram messages + independent sheet re-reads. **All 6 planned n8n workflows (WF1–WF6) are now built, verified, and active — Phase 2+ is complete.** See `## Session: 2026-08-10 (cont.) — WF2 built & verified` |
 | Phase 7 — Review flow + Income parsing | ✅ Built & verified 2026-08-10 | Low-confidence categorizations now persist a `[review: confidence NN%]` tag in `notes` and are fixable via `scripts/review_transactions.py` (new rows only, not retroactive). `income_parser.py` extracts salary NEFT credits from Kotak savings-account statements into `Income`, routed ahead of card detection in `finance.py parse --pdf` — fixes a real false-success bug where a savings statement silently produced "0 rows written" (misdetected as the Kotak credit card). Verified against 4 real months, live-written for July. `Debts`/`Goals`/`Net_Worth`/`Vendor_Map` still unused. See `## Session: 2026-08-10 (cont.) — review-correction flow + Income parsing` |
-| Phase 8 — Kotak savings full ledger | ✅ Built & verified 2026-08-10 | `savings_ledger.py` classifies every line of a Kotak savings statement (not just salary) into salary/SIP/CRED Club/family-transfer/personal-spend/loan buckets, derives each row's signed amount from consecutive printed-balance deltas (handles pdftotext losing the Dr/Cr column split), and writes SIPs (deterministic `Investment/SIP/save`), CRED Club + family transfers (`[review: ...]` tagged, ambiguous purpose), and personal spend (through the real Claude categorizer) into `Transactions` under `card_account = "Kotak Savings"`. Gold-loan-linked lines ("Ins Debit"/"Pyt Loan", GLN-tagged) are deliberately reported only, never written — real loan terms need the user, not one month's cash flow. Live-verified for July: 48 rows written, 42 flagged for review, independently re-summed to ₹135,966.76. All 42 subsequently reviewed and categorized (see `## Session: 2026-08-10 (cont.) — reviewed all 48 Kotak Savings rows`). `Debts` still has zero real rows — the found gold loan is the next real candidate once the user supplies its terms. See `## Session: 2026-08-10 (cont.) — Kotak savings full ledger` |
+| Phase 8 — Kotak savings full ledger | ✅ Built & verified 2026-08-10 | `savings_ledger.py` classifies every line of a Kotak savings statement (not just salary) into salary/SIP/CRED Club/family-transfer/personal-spend/loan buckets, derives each row's signed amount from consecutive printed-balance deltas (handles pdftotext losing the Dr/Cr column split), and writes SIPs (deterministic `Investment/SIP/save`), CRED Club + family transfers (`[review: ...]` tagged, ambiguous purpose), and personal spend (through the real Claude categorizer) into `Transactions` under `card_account = "Kotak Savings"`. Gold-loan-linked lines ("Ins Debit"/"Pyt Loan", GLN-tagged) are deliberately reported only, never written — real loan terms need the user, not one month's cash flow. Live-verified for July: 48 rows written, 42 flagged for review, independently re-summed to ₹135,966.76. All 42 subsequently reviewed and categorized (see `## Session: 2026-08-10 (cont.) — reviewed all 48 Kotak Savings rows`). `Debts` now has its first real row — see `## Session: 2026-08-11 (cont.) — gold loan entered into Debts`. See `## Session: 2026-08-10 (cont.) — Kotak savings full ledger` |
 
 ### Axis and Emirates NBD — dropped from scope
 Axis: the only files under `dump/axis/` are savings-account statements (zero transactions,
@@ -84,8 +84,8 @@ Do NOT recreate `venv/` inside the project folder — it will reintroduce the sl
 ## Google Sheets (9 tabs) — all created ✅
 `Income` (has real data as of 2026-08-10, see `income_parser.py`) · `Transactions` (now includes
 `card_account = "Kotak Savings"` rows via `savings_ledger.py`, not just the 5 credit cards) ·
-`Debts` (unused — a real gold loan was found in the Kotak savings statement 2026-08-10, needs the
-user's actual loan terms to enter) · `Budget` · `Goals` (unused) · `Net_Worth` (unused) ·
+`Debts` (1 real row as of 2026-08-11 — Kotak Gold Loan GLN4805528, rate/EMI provisional pending
+next month's statement) · `Budget` · `Goals` (unused) · `Net_Worth` (unused) ·
 `FX_Rates` · `Categories` (65 rows, seeded 2026-08-11) · `Vendor_Map` (22 rows, trained 2026-08-11)
 
 ---
@@ -1696,5 +1696,63 @@ prior session.
 - Same security-hardening and `NIwD3iarrxwH36qj` loose ends from 2026-08-10 remain untouched.
 
 ### Next session — resume here
+> **Superseded 2026-08-11** — see `## Session: 2026-08-11 (cont.) — gold loan entered into Debts`
+> below for what actually happened. Left below, per this project's own "mention, don't delete"
+> Surgical Changes rule.
+
 Bring the gold loan's real terms (principal, rate, outstanding, EMI/due date) to populate `Debts`,
 or say **"security-hardening"** for the still-open repo/Sheet-access items.
+
+---
+
+## Session: 2026-08-11 (cont.) — gold loan entered into Debts
+
+User supplied the gold loan's real terms, resolving the last open item from the Kotak-savings
+work: the statement's two GLN account numbers are **not** two live debts — GLN4805528 is the new
+loan (₹4,57,829 disbursed 16 Jul 2026), and GLN4228809 is an **old, now-closed** loan that was
+paid off using ₹4,37,770 of the new loan's proceeds (the "Ins Debit"/"Pyt Loan" GLN4228809 lines
+found in the July statement). Only GLN4805528 got a `Debts` row.
+
+### Terms entered, two marked provisional per the user's own uncertainty
+`interest_rate: 11.5` — user said "I think its 11.5% or 12%, slightly unsure." `emi_amount` /
+`min_payment: 3025` — user said this is the first month's premium only and it "will increase next
+month onwards," exact new figure unknown until the next statement. `due_date` left blank — not yet
+known. Told the user both are provisional and shouldn't be trusted as final without confirming
+against the next real statement — consistent with this project's standing rule of never treating
+a single data point as ground truth when the user themselves flagged it as uncertain.
+
+### Real finding: `debt_planner.py`'s avalanche model doesn't fit this loan's actual structure
+Running `python finance.py debt` against the new row produced a nonsensical projection — 2056
+payoff, ₹53L total interest — because at ₹3,025/month against 11.5% on ₹4,57,829, monthly interest
+accrual (~₹4,387) is *larger* than the payment itself, so the simulated balance grows every month
+under `debt_planner.py`'s amortizing-loan model. Didn't paper over this or silently "fix" it by
+guessing a bigger EMI — flagged it directly: gold loans in India are typically interest-only
+monthly payments with the principal due as a bullet at maturity/lock-in end, not a standard
+amortizing EMI like a credit card or personal loan, which is what `debt_planner.py` was built to
+model (see `## Coding conventions` — `debt_planner.py`'s hybrid avalanche+snowball design assumes
+amortizing debt). The `Debts` row itself is accurate raw data (principal, rate, current
+outstanding); the `debt` command's payoff projection specifically should not be trusted for this
+loan until the real lock-in/maturity date is known.
+
+### Clean verification
+Independently re-read `Debts` after the write (1 row, values matched exactly what was appended).
+Ran `python finance.py debt` as an integration check — confirmed `load_debts()` picks the row up
+correctly (`Active debts: 1`, `Total owed: ₹457,829`) even though the payoff simulation itself is
+the wrong model for this debt type, per the finding above.
+
+### Loose ends for next session
+- `debt_planner.py`'s avalanche/amortizing model may need a second mode (interest-only /
+  bullet-repayment) if gold-loan tracking is going to be genuinely useful here — not built this
+  session, flagged only. Revisit once the loan's real lock-in/maturity terms are confirmed.
+- `interest_rate` and `emi_amount` on the `Kotak Gold Loan GLN4805528` row are both provisional —
+  confirm against next month's real Kotak statement and correct if wrong.
+- `due_date` is still blank on this row — fill in once known.
+- `Goals`/`Net_Worth` are still unused.
+- CRED Club / K Radha Gouri automation gap (from the prior session) remains unaddressed.
+- Same security-hardening and `NIwD3iarrxwH36qj` loose ends from 2026-08-10 remain untouched.
+
+### Next session — resume here
+Once next month's Kotak statement comes in, confirm the gold loan's real rate/EMI/maturity terms
+and correct the `Debts` row if needed — that's also the natural trigger to revisit whether
+`debt_planner.py` needs an interest-only debt mode. Otherwise say **"security-hardening"** for the
+still-open repo/Sheet-access items.
